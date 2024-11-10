@@ -12,4 +12,4 @@ default-run = "mail-devil"
 rust-version = "1.82.0"
 
 [dependencies]
-tokio = { version = "1.41", features = ["rt", "net", "sync", "time", "signal", "macros"] }
+tokio = { version = "1.41", features = ["rt", "net", "time", "sync", "fs", "signal", "macros", "io-util", "io-std"] }

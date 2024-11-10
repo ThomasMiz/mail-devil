@@ -1,0 +1,15 @@
+[package]
+name = "mail-devil"
+version = "0.1.0"
+edition = "2021"
+description = "A simple POP3 server implementation"
+license = "MIT OR Apache-2.0"
+readme = "../README.md"
+repository = "https://github.com/ThomasMiz/mail-devil"
+keywords = ["server", "pop3", "email"]
+categories = ["network-programming"]
+default-run = "mail-devil"
+rust-version = "1.82.0"
+
+[dependencies]
+tokio = { version = "1.41", features = ["rt", "net", "sync", "time", "signal", "macros"] }

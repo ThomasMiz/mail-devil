@@ -9,6 +9,8 @@ use tokio::{
     task::LocalSet,
 };
 
+mod pop3;
+
 fn main() {
     let start_result = tokio::runtime::Builder::new_current_thread().enable_all().build();
     let runtime = match start_result {
@@ -26,7 +28,7 @@ fn main() {
 }
 
 async fn async_main() -> io::Result<()> {
-    let listener = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 1080))
+    let listener = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 110))
         .await
         .inspect_err(|err| eprintln!("Failed to bind listening socket: {err}"))?;
 
@@ -42,13 +44,7 @@ async fn async_main() -> io::Result<()> {
 }
 
 async fn handle_client_wrapper(socket: TcpStream, address: SocketAddr) {
-    if let Err(err) = handle_client(socket).await {
+    if let Err(err) = pop3::handle_client(socket).await {
         eprintln!("Client from {address} ended with error: {err}");
     }
-}
-
-async fn handle_client(mut socket: TcpStream) -> io::Result<()> {
-    let (mut read_half, mut write_half) = socket.split();
-    tokio::io::copy(&mut read_half, &mut write_half).await?;
-    Ok(())
 }

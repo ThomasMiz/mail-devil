@@ -10,6 +10,7 @@ use tokio::{
 };
 
 mod pop3;
+mod util;
 
 fn main() {
     let start_result = tokio::runtime::Builder::new_current_thread().enable_all().build();

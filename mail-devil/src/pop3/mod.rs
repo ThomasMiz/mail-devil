@@ -5,11 +5,17 @@ use tokio::{
     net::TcpStream,
 };
 
+mod parsers;
+
 pub async fn handle_client(mut socket: TcpStream) -> io::Result<()> {
     let (read_half, mut write_half) = socket.split();
-    let reader = BufReader::new(read_half);
+    let mut reader = BufReader::new(read_half);
 
     write_half.write_all(b"+OK No swearing on my christian POP3 server\r\n").await?;
+
+    loop {
+        let _ = parsers::parse_command(&mut reader).await;
+    }
 
     let mut lines = reader.lines();
 

@@ -13,3 +13,4 @@ rust-version = "1.82.0"
 
 [dependencies]
 tokio = { version = "1.41", features = ["rt", "net", "time", "sync", "fs", "signal", "macros", "io-util", "io-std"] }
+inlined = "0.1"

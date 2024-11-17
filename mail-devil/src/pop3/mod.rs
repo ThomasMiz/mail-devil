@@ -14,7 +14,8 @@ pub async fn handle_client(mut socket: TcpStream) -> io::Result<()> {
     write_half.write_all(b"+OK No swearing on my christian POP3 server\r\n").await?;
 
     loop {
-        let _ = parsers::parse_command(&mut reader).await;
+        let resulty = parsers::parse_command(&mut reader).await;
+        println!("{resulty:?}");
     }
 
     let mut lines = reader.lines();

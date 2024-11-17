@@ -33,6 +33,8 @@ async fn async_main() -> io::Result<()> {
         .await
         .inspect_err(|err| eprintln!("Failed to bind listening socket: {err}"))?;
 
+    let server_state = pop3::Pop3ServerState::new();
+
     loop {
         let (client_socket, client_address) = listener
             .accept()
@@ -40,12 +42,12 @@ async fn async_main() -> io::Result<()> {
             .inspect_err(|err| eprintln!("Failed to accept incoming connection: {err}"))?;
 
         println!("Incoming connection from {client_address}");
-        tokio::task::spawn_local(handle_client_wrapper(client_socket, client_address));
+        tokio::task::spawn_local(handle_client_wrapper(client_socket, client_address, server_state.clone()));
     }
 }
 
-async fn handle_client_wrapper(socket: TcpStream, address: SocketAddr) {
-    if let Err(err) = pop3::handle_client(socket).await {
+async fn handle_client_wrapper(socket: TcpStream, address: SocketAddr, server_state: pop3::Pop3ServerState) {
+    if let Err(err) = pop3::handle_client(socket, server_state).await {
         eprintln!("Client from {address} ended with error: {err}");
     }
 }

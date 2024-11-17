@@ -1,4 +1,5 @@
 use std::{
+    fmt,
     io::{self, ErrorKind},
     num::NonZeroU16,
     str::FromStr,
@@ -26,15 +27,18 @@ const NOOP_COMMAND_CODE: u32 = u32::from_le_bytes([b'N', b'O', b'O', b'P']);
 const RSET_COMMAND_CODE: u32 = u32::from_le_bytes([b'R', b'S', b'E', b'T']);
 const QUIT_COMMAND_CODE: u32 = u32::from_le_bytes([b'Q', b'U', b'I', b'T']);
 
+pub type Pop3ArgString = TinyString<MAX_COMMAND_ARG_LENGTH>;
+pub type MessageNumber = NonZeroU16;
+
 #[derive(Debug)]
 pub enum Pop3Command {
-    User(TinyString<MAX_COMMAND_ARG_LENGTH>),
-    Pass(TinyString<MAX_COMMAND_ARG_LENGTH>),
+    User(Pop3ArgString),
+    Pass(Pop3ArgString),
     Quit,
     Stat,
-    List(Option<NonZeroU16>),
-    Retr(NonZeroU16),
-    Dele(NonZeroU16),
+    List(Option<MessageNumber>),
+    Retr(MessageNumber),
+    Dele(MessageNumber),
     Noop,
     Rset,
 }
@@ -56,6 +60,26 @@ pub enum Pop3CommandError {
     IO(io::Error),
 }
 
+impl fmt::Display for Pop3CommandError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EmptyLine => write!(f, "How about you try actually writing something? Dumbass"),
+            Self::UnknownCommand => write!(f, "Unknown command"),
+            Self::NonPrintableAsciiChar(c) => write!(f, "Non ASCII character with code 0x{c:x}"),
+            Self::User(e) => e.fmt(f),
+            Self::Pass(e) => e.fmt(f),
+            Self::Quit(e) => e.fmt(f),
+            Self::Stat(e) => e.fmt(f),
+            Self::List(e) => e.fmt(f),
+            Self::Retr(e) => e.fmt(f),
+            Self::Dele(e) => e.fmt(f),
+            Self::Noop(e) => e.fmt(f),
+            Self::Rset(e) => e.fmt(f),
+            Self::IO(e) => write!(f, "IO error: {e:?}"),
+        }
+    }
+}
+
 impl From<io::Error> for Pop3CommandError {
     fn from(value: io::Error) -> Self {
         Self::IO(value)
@@ -67,6 +91,16 @@ pub enum UserCommandError {
     NoArguments,
     TooManyArguments,
     ArgumentTooLong,
+}
+
+impl fmt::Display for UserCommandError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoArguments => write!(f, "No username specified"),
+            Self::TooManyArguments => write!(f, "Too many arguments"),
+            Self::ArgumentTooLong => write!(f, "Usernames must be at most 40 characters long"),
+        }
+    }
 }
 
 impl From<UserCommandError> for Pop3CommandError {
@@ -81,6 +115,15 @@ pub enum PassCommandError {
     ArgumentTooLong,
 }
 
+impl fmt::Display for PassCommandError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoArgument => write!(f, "No password specified"),
+            Self::ArgumentTooLong => write!(f, "Passwords must be at most 40 characters long"),
+        }
+    }
+}
+
 impl From<PassCommandError> for Pop3CommandError {
     fn from(value: PassCommandError) -> Self {
         Self::Pass(value)
@@ -92,10 +135,25 @@ pub enum NoArgCommandError {
     TooManyArguments,
 }
 
+impl fmt::Display for NoArgCommandError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "This command takes no arguments")
+    }
+}
+
 #[derive(Debug)]
 pub enum OptionalNumericArgError {
     TooManyArguments,
     InvalidArgument,
+}
+
+impl fmt::Display for OptionalNumericArgError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::TooManyArguments => write!(f, "This command takes at most one argument"),
+            Self::InvalidArgument => write!(f, "Argument is not a valid number"),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -103,6 +161,16 @@ pub enum NumericArgCommandError {
     NoArgument,
     TooManyArguments,
     InvalidArgument,
+}
+
+impl fmt::Display for NumericArgCommandError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoArgument => write!(f, "This command takes exactly one argument"),
+            Self::TooManyArguments => write!(f, "Too many arguments"),
+            Self::InvalidArgument => write!(f, "Argument is not a valid number"),
+        }
+    }
 }
 
 /// Reads a POP3 command from the given buffered reader, reading up to (and including) the next end of line, and
@@ -207,7 +275,7 @@ where
     }
 }
 
-fn parse_user_command(args: &str) -> Result<TinyString<MAX_COMMAND_ARG_LENGTH>, UserCommandError> {
+fn parse_user_command(args: &str) -> Result<Pop3ArgString, UserCommandError> {
     let mut split = args.trim().split_ascii_whitespace();
 
     match split.next() {
@@ -218,7 +286,7 @@ fn parse_user_command(args: &str) -> Result<TinyString<MAX_COMMAND_ARG_LENGTH>, 
     }
 }
 
-fn parse_pass_command(args: &str) -> Result<TinyString<MAX_COMMAND_ARG_LENGTH>, PassCommandError> {
+fn parse_pass_command(args: &str) -> Result<Pop3ArgString, PassCommandError> {
     if args.is_empty() {
         return Err(PassCommandError::NoArgument);
     }
@@ -238,10 +306,10 @@ fn parse_no_arg_command(args: &str, command: Pop3Command) -> Result<Pop3Command,
     Ok(command)
 }
 
-fn parse_optnum_command(args: &str) -> Result<Option<NonZeroU16>, OptionalNumericArgError> {
+fn parse_optnum_command(args: &str) -> Result<Option<MessageNumber>, OptionalNumericArgError> {
     let mut split = args.trim().split_ascii_whitespace();
 
-    match split.next().map(NonZeroU16::from_str) {
+    match split.next().map(MessageNumber::from_str) {
         None => Ok(None),
         Some(_) if split.next().is_some() => Err(OptionalNumericArgError::TooManyArguments),
         Some(Ok(number)) => Ok(Some(number)),
@@ -249,10 +317,10 @@ fn parse_optnum_command(args: &str) -> Result<Option<NonZeroU16>, OptionalNumeri
     }
 }
 
-fn parse_num_command(args: &str) -> Result<NonZeroU16, NumericArgCommandError> {
+fn parse_num_command(args: &str) -> Result<MessageNumber, NumericArgCommandError> {
     let mut split = args.trim().split_ascii_whitespace();
 
-    match split.next().map(NonZeroU16::from_str) {
+    match split.next().map(MessageNumber::from_str) {
         None => Err(NumericArgCommandError::NoArgument),
         Some(_) if split.next().is_some() => Err(NumericArgCommandError::TooManyArguments),
         Some(Ok(number)) => Ok(number),

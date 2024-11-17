@@ -13,6 +13,7 @@ mod responses;
 mod server;
 mod session;
 
+pub use parsers::Pop3ArgString;
 pub use server::Pop3ServerState;
 
 pub async fn handle_client(mut socket: TcpStream, server_state: Pop3ServerState) -> io::Result<()> {
@@ -32,7 +33,7 @@ pub async fn handle_client(mut socket: TcpStream, server_state: Pop3ServerState)
         let command = match resulty {
             Err(Pop3CommandError::IO(e)) => return Err(e),
             Err(err) => {
-                responses::write_response(&mut writer, false, Some(err)).await?;
+                Pop3Response::Err(Some(err)).write_to(&mut writer).await?;
                 continue;
             }
             Ok(cmd) => cmd,

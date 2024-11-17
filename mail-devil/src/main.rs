@@ -1,18 +1,44 @@
 use std::{
-    io,
+    env, io,
     net::{Ipv4Addr, SocketAddr, SocketAddrV4},
     process::exit,
 };
 
+use args::ArgumentsRequest;
 use tokio::{
     net::{TcpListener, TcpStream},
     task::LocalSet,
 };
 
+mod args;
 mod pop3;
 mod util;
 
 fn main() {
+    let arguments = match args::parse_arguments(env::args()) {
+        Err(err) => {
+            eprintln!("{err}\n\nType 'mail-devil --help' for a help menu");
+            exit(1);
+        }
+        Ok(arguments) => arguments,
+    };
+
+    let startup_args = match arguments {
+        ArgumentsRequest::Version => {
+            println!("{}", args::get_version_string());
+            println!("Push Pop for now, Push Pop for later.");
+            return;
+        }
+        ArgumentsRequest::Help => {
+            println!("{}", args::get_help_string());
+            return;
+        }
+        ArgumentsRequest::Run(startup_args) => startup_args,
+    };
+
+    println!("Startup arguments: {startup_args:?}"); // TODO: Remove
+
+    printlnif!(startup_args.verbose, "Starting up tokio runtime");
     let start_result = tokio::runtime::Builder::new_current_thread().enable_all().build();
     let runtime = match start_result {
         Ok(rt) => rt,
@@ -23,7 +49,8 @@ fn main() {
     };
 
     let result = LocalSet::new().block_on(&runtime, async_main());
-    if result.is_err() {
+    if let Err(e) = result {
+        eprintln!("Server closed due to unexpected error: {e}");
         exit(1);
     }
 }

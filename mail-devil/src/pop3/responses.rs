@@ -60,13 +60,3 @@ where
     buf.push_str("\r\n");
     writer.write_all(buf.as_bytes()).await
 }
-
-/// Writes a POP3 response into the given possibly-unbuffered writer without an additional message.
-///
-/// Works the same way as [`write_response`].
-pub async fn write_empty_response<W>(writer: &mut W, status: bool) -> io::Result<()>
-where
-    W: AsyncWrite + Unpin + ?Sized,
-{
-    write_response(writer, status, None::<&str>).await
-}

@@ -24,3 +24,32 @@ pub fn printable_ascii_from_bytes(buf: &[u8]) -> Result<&str, u8> {
     // SAFETY: We previously ensured `buf` contains only ASCII chars, and thus it is UTF-8.
     Ok(unsafe { std::str::from_utf8_unchecked(buf) })
 }
+
+/// A simple trait for checking whether a type is a valid username.
+pub trait IsValidUsername {
+    fn is_valid_username(&self) -> bool;
+}
+
+impl IsValidUsername for [u8] {
+    fn is_valid_username(&self) -> bool {
+        if self.len() == 0 {
+            return false;
+        }
+
+        // Must start with a-z A-Z or '_'.
+        if (self[0] < b'a' || self[0] > b'z') && (self[0] < b'A' || self[0] > b'Z') && self[0] != b'_' {
+            return false;
+        }
+
+        // All other characters may be a-z, A-Z, 0-9 or '_'.
+        self.iter()
+            .copied()
+            .all(|b| (b >= b'0' && b <= b'9') || (b >= b'a' && b <= b'z') || b == b'_')
+    }
+}
+
+impl IsValidUsername for str {
+    fn is_valid_username(&self) -> bool {
+        self.as_bytes().is_valid_username()
+    }
+}

@@ -8,7 +8,7 @@ use std::{
 use inlined::{TinyString, TinyVec};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt};
 
-use crate::util::ascii;
+use crate::util::ascii::{self, IsValidUsername};
 
 /// The maximum allowed length (in bytes) for a single line with a POP3 command.
 pub const MAX_COMMAND_LINE_LENGTH: usize = 255;
@@ -91,6 +91,7 @@ pub enum UserCommandError {
     NoArguments,
     TooManyArguments,
     ArgumentTooLong,
+    InvalidUsername,
 }
 
 impl fmt::Display for UserCommandError {
@@ -99,6 +100,7 @@ impl fmt::Display for UserCommandError {
             Self::NoArguments => write!(f, "No username specified"),
             Self::TooManyArguments => write!(f, "Too many arguments"),
             Self::ArgumentTooLong => write!(f, "Usernames must be at most 40 characters long"),
+            Self::InvalidUsername => write!(f, "Username contains invalid characters"),
         }
     }
 }
@@ -281,6 +283,7 @@ fn parse_user_command(args: &str) -> Result<Pop3ArgString, UserCommandError> {
     match split.next() {
         None => Err(UserCommandError::NoArguments),
         Some(username) if username.len() > 40 => Err(UserCommandError::ArgumentTooLong),
+        Some(username) if !username.is_valid_username() => Err(UserCommandError::InvalidUsername),
         Some(_) if split.next().is_some() => Err(UserCommandError::TooManyArguments),
         Some(username) => Ok(TinyString::from(username)),
     }

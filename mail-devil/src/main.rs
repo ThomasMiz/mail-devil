@@ -7,6 +7,7 @@ mod args;
 mod pop3;
 mod server;
 mod state;
+mod user_tracker;
 mod util;
 
 fn main() {
@@ -18,7 +19,7 @@ fn main() {
         Ok(arguments) => arguments,
     };
 
-    let startup_args = match arguments {
+    let mut startup_args = match arguments {
         ArgumentsRequest::Version => {
             println!("{}", args::get_version_string());
             println!("Push Pop for now, Push Pop for later.");
@@ -30,6 +31,11 @@ fn main() {
         }
         ArgumentsRequest::Run(startup_args) => startup_args,
     };
+
+    if startup_args.silent && startup_args.verbose {
+        eprintln!("This absolute jackass requested both silent and verbose. I'm disabling verbose.");
+        startup_args.verbose = false;
+    }
 
     printlnif!(startup_args.verbose, "Starting up tokio runtime");
     let start_result = tokio::runtime::Builder::new_current_thread().enable_all().build();

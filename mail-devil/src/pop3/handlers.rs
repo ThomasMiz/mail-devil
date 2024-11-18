@@ -44,7 +44,7 @@ where
             Some(username) => {
                 if username.deref().eq("pedro") && password.deref().eq("other123") {
                     // TODO: Implement users
-                    *session_state = Pop3SessionState::Transaction(TransactionState::new());
+                    *session_state = Pop3SessionState::Transaction(TransactionState::new(username.clone()));
                     Pop3Response::Ok(None)
                 } else {
                     Pop3Response::Err(Some("Invalid user or password"))

@@ -25,10 +25,12 @@ use std::{
     fmt,
     io::ErrorKind,
     net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6, ToSocketAddrs},
+    path::PathBuf,
+    str::FromStr,
 };
 
-use crate::pop3::Pop3ArgString;
 use crate::util::buffer_size::{parse_pretty_buffer_size, PrettyBufferSizeParseError};
+use crate::{pop3::Pop3ArgString, util::ascii::IsValidUsername};
 
 pub const DEFAULT_MAILDIRS_FILE: &str = "./maildirs";
 pub const DEFAULT_POP3_PORT: u16 = 110;
@@ -92,49 +94,10 @@ pub struct StartupArguments {
     pub pop3_bind_sockets: Vec<SocketAddr>,
     pub verbose: bool,
     pub silent: bool,
-    pub maildirs_file: String,
+    pub maildirs_file: PathBuf,
     pub users: HashMap<Pop3ArgString, Pop3ArgString>,
     pub buffer_size: u32,
-    pub transformer_file: String,
-}
-
-impl StartupArguments {
-    pub fn empty() -> Self {
-        StartupArguments {
-            pop3_bind_sockets: Vec::new(),
-            verbose: false,
-            silent: false,
-            maildirs_file: String::new(),
-            users: HashMap::new(),
-            buffer_size: 0,
-            transformer_file: String::new(),
-        }
-    }
-
-    pub fn fill_empty_fields_with_defaults(&mut self) {
-        if self.pop3_bind_sockets.is_empty() {
-            self.pop3_bind_sockets
-                .push(SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, DEFAULT_POP3_PORT, 0, 0)));
-            self.pop3_bind_sockets
-                .push(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, DEFAULT_POP3_PORT)));
-        }
-
-        if self.maildirs_file.is_empty() {
-            self.maildirs_file.push_str(DEFAULT_MAILDIRS_FILE);
-        }
-
-        if self.buffer_size == 0 {
-            self.buffer_size = DEFAULT_BUFFER_SIZE;
-        }
-    }
-}
-
-impl Default for StartupArguments {
-    fn default() -> Self {
-        let mut args = Self::empty();
-        args.fill_empty_fields_with_defaults();
-        args
-    }
+    pub transformer_file: Option<PathBuf>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -175,7 +138,7 @@ fn fmt_file_error_type(this: &FileErrorType, s: &str, f: &mut fmt::Formatter<'_>
     }
 }
 
-fn parse_file_arg(result: &mut String, arg: String, maybe_arg2: Option<String>) -> Result<(), FileErrorType> {
+fn parse_file_arg(file: &mut Option<PathBuf>, arg: String, maybe_arg2: Option<String>) -> Result<(), FileErrorType> {
     let arg2 = match maybe_arg2 {
         Some(arg2) => arg2,
         None => return Err(FileErrorType::UnexpectedEnd(arg)),
@@ -183,11 +146,11 @@ fn parse_file_arg(result: &mut String, arg: String, maybe_arg2: Option<String>) 
 
     if arg2.is_empty() {
         return Err(FileErrorType::EmptyPath(arg));
-    } else if !result.is_empty() {
+    } else if file.is_some() {
         return Err(FileErrorType::AlreadySpecified(arg));
     }
 
-    *result = arg2;
+    *file = Some(PathBuf::from(arg2));
     Ok(())
 }
 
@@ -241,6 +204,7 @@ pub enum NewUserErrorType {
     DuplicateUsername(String, String),
     UsernameTooLong(String, String),
     PasswordTooLong(String, String),
+    InvalidUsername(String, String),
     InvalidUserSpecification(String, String),
 }
 
@@ -251,6 +215,7 @@ impl fmt::Display for NewUserErrorType {
             Self::DuplicateUsername(arg, arg2) => write!(f, "Duplicate username at {arg} {arg2}"),
             Self::UsernameTooLong(arg, arg2) => write!(f, "Username too long at {arg} {arg2}"),
             Self::PasswordTooLong(arg, arg2) => write!(f, "Password too long at {arg} {arg2}"),
+            Self::InvalidUsername(arg, arg2) => write!(f, "Invalid username {arg} {arg2}"),
             Self::InvalidUserSpecification(arg, arg2) => write!(f, "Invalid user specification at {arg} {arg2}"),
         }
     }
@@ -262,7 +227,11 @@ impl From<NewUserErrorType> for ArgumentsError {
     }
 }
 
-fn parse_new_user_arg(result: &mut StartupArguments, arg: String, maybe_arg2: Option<String>) -> Result<(), NewUserErrorType> {
+fn parse_new_user_arg(
+    users: &mut HashMap<Pop3ArgString, Pop3ArgString>,
+    arg: String,
+    maybe_arg2: Option<String>,
+) -> Result<(), NewUserErrorType> {
     let arg2 = match maybe_arg2 {
         Some(arg2) => arg2,
         None => return Err(NewUserErrorType::UnexpectedEnd(arg)),
@@ -282,6 +251,10 @@ fn parse_new_user_arg(result: &mut StartupArguments, arg: String, maybe_arg2: Op
         return Err(NewUserErrorType::UsernameTooLong(arg, arg2));
     }
 
+    if !username_str.is_valid_username() {
+        return Err(NewUserErrorType::InvalidUsername(arg, arg2));
+    }
+
     let password_str = &arg2_trimmed[(colon_index + 1)..];
     if password_str.len() > 40 {
         return Err(NewUserErrorType::PasswordTooLong(arg, arg2));
@@ -290,7 +263,7 @@ fn parse_new_user_arg(result: &mut StartupArguments, arg: String, maybe_arg2: Op
     let username: Pop3ArgString = Pop3ArgString::from(username_str);
     let password: Pop3ArgString = Pop3ArgString::from(password_str);
 
-    let vacant_entry = match result.users.entry(username) {
+    let vacant_entry = match users.entry(username) {
         std::collections::hash_map::Entry::Occupied(_) => return Err(NewUserErrorType::DuplicateUsername(arg, arg2)),
         std::collections::hash_map::Entry::Vacant(vac) => vac,
     };
@@ -330,13 +303,13 @@ impl From<BufferSizeErrorType> for ArgumentsError {
     }
 }
 
-fn parse_buffer_size_arg(result: &mut StartupArguments, arg: String, maybe_arg2: Option<String>) -> Result<(), BufferSizeErrorType> {
+fn parse_buffer_size_arg(buffer_size: &mut u32, arg: String, maybe_arg2: Option<String>) -> Result<(), BufferSizeErrorType> {
     let arg2 = match maybe_arg2 {
         Some(arg2) => arg2,
         None => return Err(BufferSizeErrorType::UnexpectedEnd(arg)),
     };
 
-    if result.buffer_size != 0 {
+    if *buffer_size != 0 {
         return Err(BufferSizeErrorType::AlreadySpecified(arg));
     }
 
@@ -353,7 +326,7 @@ fn parse_buffer_size_arg(result: &mut StartupArguments, arg: String, maybe_arg2:
         }
     };
 
-    result.buffer_size = size;
+    *buffer_size = size;
     Ok(())
 }
 
@@ -361,7 +334,13 @@ pub fn parse_arguments<T>(mut args: T) -> Result<ArgumentsRequest, ArgumentsErro
 where
     T: Iterator<Item = String>,
 {
-    let mut result = StartupArguments::empty();
+    let mut pop3_bind_sockets = Vec::new();
+    let mut verbose = false;
+    let mut silent = false;
+    let mut maildirs_file = None;
+    let mut users = HashMap::new();
+    let mut buffer_size = DEFAULT_BUFFER_SIZE;
+    let mut transformer_file = None;
 
     // Ignore the first argument, as it's by convention the name of the program
     args.next();
@@ -374,25 +353,40 @@ where
         } else if arg.eq("-V") || arg.eq_ignore_ascii_case("--version") {
             return Ok(ArgumentsRequest::Version);
         } else if arg.eq("-v") || arg.eq_ignore_ascii_case("--verbose") {
-            result.verbose = true;
+            verbose = true;
         } else if arg.eq("-s") || arg.eq_ignore_ascii_case("--silent") {
-            result.silent = true;
+            silent = true;
         } else if arg.eq("-l") || arg.eq_ignore_ascii_case("--listen") {
-            parse_socket_arg(&mut result.pop3_bind_sockets, arg, args.next(), DEFAULT_POP3_PORT)
-                .map_err(ArgumentsError::Pop3ListenError)?;
+            parse_socket_arg(&mut pop3_bind_sockets, arg, args.next(), DEFAULT_POP3_PORT).map_err(ArgumentsError::Pop3ListenError)?;
         } else if arg.eq("-d") || arg.eq_ignore_ascii_case("--maildirs") {
-            parse_file_arg(&mut result.maildirs_file, arg, args.next()).map_err(ArgumentsError::MaildirsFileError)?;
+            parse_file_arg(&mut maildirs_file, arg, args.next()).map_err(ArgumentsError::MaildirsFileError)?;
         } else if arg.eq("-u") || arg.eq_ignore_ascii_case("--user") {
-            parse_new_user_arg(&mut result, arg, args.next())?;
+            parse_new_user_arg(&mut users, arg, args.next())?;
         } else if arg.eq("-b") || arg.eq_ignore_ascii_case("--buffer-size") {
-            parse_buffer_size_arg(&mut result, arg, args.next())?;
+            parse_buffer_size_arg(&mut buffer_size, arg, args.next())?;
         } else if arg.eq("-t") || arg.eq_ignore_ascii_case("--transformer") {
-            parse_file_arg(&mut result.transformer_file, arg, args.next()).map_err(ArgumentsError::TransformerFileError)?;
+            parse_file_arg(&mut transformer_file, arg, args.next()).map_err(ArgumentsError::TransformerFileError)?;
         } else {
             return Err(ArgumentsError::UnknownArgument(arg));
         }
     }
 
-    result.fill_empty_fields_with_defaults();
+    if pop3_bind_sockets.is_empty() {
+        pop3_bind_sockets.push(SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, DEFAULT_POP3_PORT, 0, 0)));
+        pop3_bind_sockets.push(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, DEFAULT_POP3_PORT)));
+    }
+
+    let maildirs_file = maildirs_file.unwrap_or_else(|| DEFAULT_MAILDIRS_FILE.into());
+
+    let result = StartupArguments {
+        pop3_bind_sockets,
+        verbose,
+        silent,
+        maildirs_file,
+        users,
+        buffer_size,
+        transformer_file,
+    };
+
     Ok(ArgumentsRequest::Run(result))
 }

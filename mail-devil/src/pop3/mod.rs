@@ -1,4 +1,4 @@
-use std::io;
+use std::io::{self, ErrorKind};
 
 use parsers::{Pop3Command, Pop3CommandError};
 use responses::Pop3Response;
@@ -7,14 +7,14 @@ use tokio::{
     net::TcpStream,
 };
 
+use crate::state::Pop3ServerState;
+
 mod handlers;
 mod parsers;
 mod responses;
-mod server;
 mod session;
 
 pub use parsers::Pop3ArgString;
-pub use server::Pop3ServerState;
 
 pub async fn handle_client(mut socket: TcpStream, server_state: Pop3ServerState) -> io::Result<()> {
     let (read_half, write_half) = socket.split();
@@ -31,6 +31,7 @@ pub async fn handle_client(mut socket: TcpStream, server_state: Pop3ServerState)
         let resulty = parsers::parse_command(&mut reader).await;
 
         let command = match resulty {
+            Err(Pop3CommandError::IO(e)) if e.kind() == ErrorKind::UnexpectedEof => break,
             Err(Pop3CommandError::IO(e)) => return Err(e),
             Err(err) => {
                 Pop3Response::Err(Some(err)).write_to(&mut writer).await?;

@@ -9,6 +9,7 @@ mod server;
 mod state;
 mod user_tracker;
 mod util;
+mod types;
 
 fn main() {
     let arguments = match args::parse_arguments(env::args()) {

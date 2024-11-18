@@ -26,11 +26,13 @@ use std::{
     io::ErrorKind,
     net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6, ToSocketAddrs},
     path::PathBuf,
-    str::FromStr,
 };
 
-use crate::util::buffer_size::{parse_pretty_buffer_size, PrettyBufferSizeParseError};
-use crate::{pop3::Pop3ArgString, util::ascii::IsValidUsername};
+use crate::types::{Pop3ArgString, MAX_COMMAND_ARG_LENGTH};
+use crate::{
+    types::Pop3Username,
+    util::buffer_size::{parse_pretty_buffer_size, PrettyBufferSizeParseError},
+};
 
 pub const DEFAULT_MAILDIRS_FILE: &str = "./maildirs";
 pub const DEFAULT_POP3_PORT: u16 = 110;
@@ -95,7 +97,7 @@ pub struct StartupArguments {
     pub verbose: bool,
     pub silent: bool,
     pub maildirs_file: PathBuf,
-    pub users: HashMap<Pop3ArgString, Pop3ArgString>,
+    pub users: HashMap<Pop3Username, Pop3ArgString>,
     pub buffer_size: u32,
     pub transformer_file: Option<PathBuf>,
 }
@@ -228,7 +230,7 @@ impl From<NewUserErrorType> for ArgumentsError {
 }
 
 fn parse_new_user_arg(
-    users: &mut HashMap<Pop3ArgString, Pop3ArgString>,
+    users: &mut HashMap<Pop3Username, Pop3ArgString>,
     arg: String,
     maybe_arg2: Option<String>,
 ) -> Result<(), NewUserErrorType> {
@@ -247,21 +249,21 @@ fn parse_new_user_arg(
     };
 
     let username_str = &arg2_trimmed[..colon_index];
-    if username_str.len() > 40 {
+    if username_str.len() > MAX_COMMAND_ARG_LENGTH {
         return Err(NewUserErrorType::UsernameTooLong(arg, arg2));
     }
 
-    if !username_str.is_valid_username() {
-        return Err(NewUserErrorType::InvalidUsername(arg, arg2));
-    }
+    let username = match Pop3Username::try_from(username_str) {
+        Ok(u) => u,
+        Err(_) => return Err(NewUserErrorType::InvalidUsername(arg, arg2)),
+    };
 
     let password_str = &arg2_trimmed[(colon_index + 1)..];
-    if password_str.len() > 40 {
+    if password_str.len() > MAX_COMMAND_ARG_LENGTH {
         return Err(NewUserErrorType::PasswordTooLong(arg, arg2));
     }
 
-    let username: Pop3ArgString = Pop3ArgString::from(username_str);
-    let password: Pop3ArgString = Pop3ArgString::from(password_str);
+    let password = Pop3ArgString::from(password_str);
 
     let vacant_entry = match users.entry(username) {
         std::collections::hash_map::Entry::Occupied(_) => return Err(NewUserErrorType::DuplicateUsername(arg, arg2)),

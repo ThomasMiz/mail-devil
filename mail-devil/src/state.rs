@@ -1,10 +1,14 @@
-// TODO
+//! This module contains types for managing the POP3 server's state, as well as logic for interacting with it.
 
-use std::{cell::RefCell, collections::HashSet, path::PathBuf, rc::Rc};
+use std::{path::PathBuf, rc::Rc};
 
-use inlined::TinyString;
+use tokio::io::AsyncReadExt;
 
-use crate::user_tracker::UserTracker;
+use crate::{
+    printlnif,
+    types::{Pop3ArgString, Pop3Username, MAX_COMMAND_ARG_LENGTH, PASSWORD_FILE_NAME},
+    user_tracker::{UserHandle, UserTracker},
+};
 
 /// Stores the POP3 server's state.
 ///
@@ -28,6 +32,58 @@ impl Pop3ServerState {
     pub fn silent(&self) -> bool {
         self.rc.silent
     }
+
+    pub async fn try_login_user(&self, username: &Pop3Username, password: &Pop3ArgString) -> Result<UserHandle, LoginUserError> {
+        // Read the password file for the user into a `buf` buffer.
+        let mut path = self.rc.maildirs_dir.to_path_buf();
+        path.push(username.as_str());
+        path.push(PASSWORD_FILE_NAME);
+
+        let mut file = match tokio::fs::File::open(path).await {
+            Ok(f) => f,
+            Err(error) => {
+                printlnif!(
+                    !self.silent(),
+                    "Failed to login user {username}, could not open password file: {error}"
+                );
+                return Err(LoginUserError::WrongUserOrPass);
+            }
+        };
+
+        let mut buf = [0u8; MAX_COMMAND_ARG_LENGTH];
+        let mut buf_len = 0;
+
+        while buf_len < buf.len() {
+            let bytes_read = match file.read(&mut buf[buf_len..]).await {
+                Ok(b) => b,
+                Err(error) => {
+                    printlnif!(
+                        !self.silent(),
+                        "Failed to login user {username}, error while reading password file: {error}"
+                    );
+                    return Err(LoginUserError::WrongUserOrPass);
+                }
+            };
+
+            if bytes_read == 0 {
+                break;
+            }
+
+            buf_len += bytes_read;
+        }
+        drop(file);
+
+        if !password.as_bytes().eq(&buf[..buf_len]) {
+            printlnif!(!self.silent(), "Wrong login for user {username}");
+            return Err(LoginUserError::WrongUserOrPass);
+        }
+
+        let user_tracker = &self.rc.current_users;
+        let user_handle = user_tracker.try_register(username.clone()).ok_or(LoginUserError::AlreadyLoggedIn)?;
+
+        printlnif!(!self.silent(), "User {username} logged in successfully");
+        Ok(user_handle)
+    }
 }
 
 /// Stores the immutable variables of a POP3 server's state.
@@ -47,6 +103,21 @@ impl InnerState {
             maildirs_dir,
             transformer_file,
             current_users: UserTracker::new(),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub enum LoginUserError {
+    AlreadyLoggedIn,
+    WrongUserOrPass,
+}
+
+impl LoginUserError {
+    pub const fn get_reason_str(self) -> &'static str {
+        match self {
+            Self::AlreadyLoggedIn => "User is already logged in",
+            Self::WrongUserOrPass => "Wrong username or password",
         }
     }
 }

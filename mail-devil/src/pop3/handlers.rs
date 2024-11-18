@@ -1,9 +1,10 @@
-use std::{io, ops::Deref};
+use std::io;
 
 use tokio::io::AsyncWrite;
 
+use crate::types::{MessageNumber, Pop3ArgString, Pop3Username};
+
 use super::{
-    parsers::{MessageNumber, Pop3ArgString},
     responses::Pop3Response,
     session::{Pop3SessionState, TransactionState},
     Pop3ServerState,
@@ -13,7 +14,7 @@ pub async fn handle_user_command<W>(
     writer: &mut W,
     session_state: &mut Pop3SessionState,
     server_state: &Pop3ServerState,
-    username: Pop3ArgString,
+    username: Pop3Username,
 ) -> io::Result<()>
 where
     W: AsyncWrite + Unpin + ?Sized,
@@ -41,15 +42,13 @@ where
     let response = match session_state {
         Pop3SessionState::Authorization(authorization_state) => match &authorization_state.username {
             None => Pop3Response::Err(Some("Must specify a user before a password")),
-            Some(username) => {
-                if username.deref().eq("pedro") && password.deref().eq("other123") {
-                    // TODO: Implement users
-                    *session_state = Pop3SessionState::Transaction(TransactionState::new(username.clone()));
+            Some(username) => match server_state.try_login_user(username, &password).await {
+                Ok(user_handle) => {
+                    *session_state = Pop3SessionState::Transaction(TransactionState::new(user_handle));
                     Pop3Response::Ok(None)
-                } else {
-                    Pop3Response::Err(Some("Invalid user or password"))
                 }
-            }
+                Err(reason) => Pop3Response::Err(Some(reason.get_reason_str())),
+            },
         },
         _ => Pop3Response::Err(Some("Command only allowed in the AUTHORIZATION state")),
     };

@@ -1,11 +1,10 @@
-use std::collections::HashMap;
 use std::io::{self, ErrorKind};
 use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::args::StartupArguments;
-use crate::pop3::Pop3ArgString;
 use crate::state::Pop3ServerState;
+use crate::types::PASSWORD_FILE_NAME;
 use crate::util::sockets::{AcceptFromAny, PrintSockaddrOrUnknown};
 use crate::{pop3, printlnif};
 use tokio::io::AsyncWriteExt;
@@ -56,13 +55,13 @@ pub async fn run_server(startup_args: StartupArguments) -> io::Result<()> {
 }
 
 async fn create_user_maildir(verbose: bool, silent: bool, maildirs_file: &Path, username: &str, password: &str) -> io::Result<()> {
-    /// Create the user's maildrop directory if it doesn't exist.
+    // Create the user's maildrop directory if it doesn't exist.
     let mut path = maildirs_file.to_path_buf();
     path.push(username);
     tokio::fs::create_dir_all(&path).await?;
 
-    // Create a "password" file in the user's maildrop and write the password to that file.
-    path.push("password");
+    // Create a password file in the user's maildrop and write the password to that file.
+    path.push(PASSWORD_FILE_NAME);
     let mut file = tokio::fs::File::create(path).await?;
     file.write_all(password.as_bytes()).await?;
     file.flush().await?;

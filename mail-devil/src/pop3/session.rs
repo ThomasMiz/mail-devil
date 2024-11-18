@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use super::parsers::Pop3ArgString;
+use crate::{types::Pop3Username, user_tracker::UserHandle};
 
 /// Represents the state of a POP3 session. Each client should have its own `Pop3SessionState`.
 pub enum Pop3SessionState {
@@ -20,7 +20,7 @@ impl Pop3SessionState {
 /// Represents the state of a POP3 session in the `AUTHORIZATION` state.
 pub struct AuthorizationState {
     /// The username specified with the `USER` command, or [`None`] of no username was specified yet.
-    pub username: Option<Pop3ArgString>,
+    pub username: Option<Pop3Username>,
 }
 
 impl AuthorizationState {
@@ -31,17 +31,17 @@ impl AuthorizationState {
 
 /// Represents the state of a POP3 session in the `TRANSACTION` state.
 pub struct TransactionState {
-    /// The username of the logged in user.
-    pub username: Pop3ArgString,
+    /// The handle in the user tracker for the logged in user.
+    pub user_handle: UserHandle,
 
     /// The list of messages on the user's maildrop at the time of opening it, alongisde information on each message.
     pub messages: Vec<Message>,
 }
 
 impl TransactionState {
-    pub const fn new(username: Pop3ArgString) -> Self {
+    pub const fn new(user_handle: UserHandle) -> Self {
         Self {
-            username,
+            user_handle,
             messages: Vec::new(),
         }
     }

@@ -1,20 +1,19 @@
 use std::{
     fmt,
     io::{self, ErrorKind},
-    num::NonZeroU16,
     str::FromStr,
 };
 
-use inlined::{TinyString, TinyVec};
+use inlined::TinyVec;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt};
 
-use crate::util::ascii::{self, IsValidUsername};
+use crate::{
+    types::{MessageNumber, Pop3ArgString, Pop3Username},
+    util::ascii,
+};
 
 /// The maximum allowed length (in bytes) for a single line with a POP3 command.
 pub const MAX_COMMAND_LINE_LENGTH: usize = 255;
-
-/// The maximum allowed length (in bytes) for a POP3 command argument (taken from RFC #1939).
-pub const MAX_COMMAND_ARG_LENGTH: usize = 40;
 
 // All command keywords are 4 bytes, so for easier comparison we represent them as little-endian int32s in uppercase.
 const USER_COMMAND_CODE: u32 = u32::from_le_bytes([b'U', b'S', b'E', b'R']);
@@ -27,12 +26,9 @@ const NOOP_COMMAND_CODE: u32 = u32::from_le_bytes([b'N', b'O', b'O', b'P']);
 const RSET_COMMAND_CODE: u32 = u32::from_le_bytes([b'R', b'S', b'E', b'T']);
 const QUIT_COMMAND_CODE: u32 = u32::from_le_bytes([b'Q', b'U', b'I', b'T']);
 
-pub type Pop3ArgString = TinyString<MAX_COMMAND_ARG_LENGTH>;
-pub type MessageNumber = NonZeroU16;
-
 #[derive(Debug)]
 pub enum Pop3Command {
-    User(Pop3ArgString),
+    User(Pop3Username),
     Pass(Pop3ArgString),
     Quit,
     Stat,
@@ -277,15 +273,14 @@ where
     }
 }
 
-fn parse_user_command(args: &str) -> Result<Pop3ArgString, UserCommandError> {
+fn parse_user_command(args: &str) -> Result<Pop3Username, UserCommandError> {
     let mut split = args.trim().split_ascii_whitespace();
 
     match split.next() {
         None => Err(UserCommandError::NoArguments),
         Some(username) if username.len() > 40 => Err(UserCommandError::ArgumentTooLong),
-        Some(username) if !username.is_valid_username() => Err(UserCommandError::InvalidUsername),
         Some(_) if split.next().is_some() => Err(UserCommandError::TooManyArguments),
-        Some(username) => Ok(TinyString::from(username)),
+        Some(username) => Pop3Username::try_from(username).map_err(|_| UserCommandError::InvalidUsername),
     }
 }
 
@@ -298,7 +293,7 @@ fn parse_pass_command(args: &str) -> Result<Pop3ArgString, PassCommandError> {
         return Err(PassCommandError::ArgumentTooLong);
     }
 
-    Ok(TinyString::from(args))
+    Ok(Pop3ArgString::from(args))
 }
 
 fn parse_no_arg_command(args: &str, command: Pop3Command) -> Result<Pop3Command, NoArgCommandError> {

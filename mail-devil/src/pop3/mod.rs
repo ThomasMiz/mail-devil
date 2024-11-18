@@ -14,8 +14,6 @@ mod parsers;
 mod responses;
 mod session;
 
-pub use parsers::Pop3ArgString;
-
 pub async fn handle_client(mut socket: TcpStream, server_state: Pop3ServerState) -> io::Result<()> {
     let (read_half, write_half) = socket.split();
     let mut reader = BufReader::new(read_half);

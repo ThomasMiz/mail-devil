@@ -18,17 +18,6 @@ pub struct Pop3Username(Pop3ArgString);
 
 pub struct NonValidUsernameError;
 
-/*impl<R: AsRef<str>> TryFrom<R> for Pop3Username {
-    type Error = NonValidUsernameError;
-
-    fn try_from(value: &R) -> Result<Self, Self::Error> {
-        let s = value.as_ref();
-        match s.is_valid_username() {
-            true => Ok(Pop3Username(Pop3ArgString::from(s))),
-            false => Err(NonValidUsernameError),
-        }
-    }
-}*/
 impl TryFrom<&str> for Pop3Username {
     type Error = NonValidUsernameError;
 

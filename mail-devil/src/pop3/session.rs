@@ -2,7 +2,26 @@
 
 use std::path::PathBuf;
 
-use crate::{types::Pop3Username, user_tracker::UserHandle};
+use crate::{state::Pop3ServerState, types::Pop3Username, user_tracker::UserHandle};
+
+/// Represents a POP3 session, with a state and a reference to the server' state.
+pub struct Pop3Session {
+    pub server: Pop3ServerState,
+    pub state: Pop3SessionState,
+}
+
+impl Pop3Session {
+    pub const fn new(server: Pop3ServerState) -> Pop3Session {
+        Self {
+            server,
+            state: Pop3SessionState::new(),
+        }
+    }
+
+    pub fn enter_transaction_state(&mut self, user_handle: UserHandle) {
+        self.state = Pop3SessionState::Transaction(TransactionState::new(user_handle));
+    }
+}
 
 /// Represents the state of a POP3 session. Each client should have its own `Pop3SessionState`.
 pub enum Pop3SessionState {

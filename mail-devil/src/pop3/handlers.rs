@@ -55,7 +55,10 @@ pub async fn handle_quit_command<W>(writer: &mut W, session: &mut Pop3Session) -
 where
     W: AsyncWrite + Unpin + ?Sized,
 {
-    let response = Pop3Response::err("Not implemented :-(");
+    let response = match session.quit_session().await {
+        Ok(count) => Pop3Response::ok_deleted(count),
+        Err(count) => Pop3Response::err_deleted(count),
+    };
 
     response.write_to(writer).await
 }

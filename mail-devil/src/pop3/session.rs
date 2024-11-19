@@ -5,7 +5,7 @@ use std::{os::windows::fs::FileTypeExt, path::PathBuf};
 use crate::{
     printlnif,
     state::Pop3ServerState,
-    types::{MessageNumber, Pop3Username, MAILDIR_NEW_FOLDER},
+    types::{MessageNumber, MessageNumberCount, Pop3Username, MAILDIR_NEW_FOLDER, MAILDIR_OLD_FOLDER},
     user_tracker::UserHandle,
 };
 
@@ -27,7 +27,7 @@ impl Pop3Session {
     /// session to the `TRANSACTION` state and returns [`Some`] with the amount of new messages.
     ///
     /// Returns [`None`] if a problem occurs while reading the user's maildrop.
-    pub async fn enter_transaction_state(&mut self, user_handle: UserHandle, mut maildrop_path: PathBuf) -> Option<usize> {
+    pub async fn enter_transaction_state(&mut self, user_handle: UserHandle, mut maildrop_path: PathBuf) -> Option<MessageNumberCount> {
         maildrop_path.push(MAILDIR_NEW_FOLDER);
 
         printlnif!(
@@ -45,7 +45,8 @@ impl Pop3Session {
             .inspect_err(|error| eprintln!("Unexpected error while reading user {}'s maildrop: {error}", user_handle.username()))
             .ok()?;
 
-        loop {
+        // Just in case, we only load the first `MessageNumberCount::MAX` messages.
+        while messages.len() < MessageNumberCount::MAX as usize {
             let dir_entry = match directory_reader.next_entry().await {
                 Ok(Some(d)) => d,
                 Ok(None) => break,
@@ -81,10 +82,66 @@ impl Pop3Session {
             messages.push(Message::new(path, size));
         }
 
-        let messages_len = messages.len();
+        let messages_len = messages.len() as MessageNumberCount;
         maildrop_path.pop();
         self.state = Pop3SessionState::Transaction(TransactionState::new(maildrop_path, user_handle, messages));
         Some(messages_len)
+    }
+
+    /// Quits the current session and, if in the transaction state, deletes any messages marked for deletion by moving
+    /// them to the `cur` directory.
+    ///
+    /// Returns [`Ok`] or [`Err`] depending on whether the operation succeeded, in both cases specifying the maount of
+    /// deleted messages. In all cases, the state is set to the `END` state.
+    ///
+    /// Will always return `Ok(0)` when not in the transaction state.
+    pub async fn quit_session(&mut self) -> Result<MessageNumberCount, MessageNumberCount> {
+        let mut count = 0;
+        let mut is_ok = true;
+
+        if let Pop3SessionState::Transaction(transaction_state) = &mut self.state {
+            let pathbuf = &mut transaction_state.maildrop_dir;
+
+            if transaction_state.messages.iter().any(|m| m.is_deleted) {
+                pathbuf.push(MAILDIR_OLD_FOLDER);
+                if let Err(error) = tokio::fs::create_dir_all(pathbuf.as_path()).await {
+                    eprintln!("Could not ensure old messages folder exists: {error} on {}", pathbuf.display());
+                    is_ok = false;
+                } else {
+                    for deleted_message in transaction_state.messages.iter().filter(|m| m.is_deleted) {
+                        let deleted_message_file = match deleted_message.file.file_name() {
+                            Some(f) => f,
+                            None => {
+                                eprintln!("Could not get file name from path {}", deleted_message.file.display());
+                                is_ok = false;
+                                continue;
+                            }
+                        };
+
+                        pathbuf.push(deleted_message_file);
+                        match tokio::fs::rename(&deleted_message.file.as_path(), pathbuf.as_path()).await {
+                            Ok(()) => count += 1,
+                            Err(error) => {
+                                is_ok = false;
+                                eprintln!(
+                                    "Error moving message file to old messages folder: {error} while moving {} to {}",
+                                    deleted_message.file.display(),
+                                    pathbuf.display()
+                                )
+                            }
+                        }
+                        pathbuf.pop();
+                    }
+                }
+            }
+        }
+
+        self.state = Pop3SessionState::End;
+
+        match is_ok {
+            true => Ok(count),
+            false => Err(count),
+        }
     }
 }
 
@@ -92,6 +149,7 @@ impl Pop3Session {
 pub enum Pop3SessionState {
     Authorization(AuthorizationState),
     Transaction(TransactionState),
+    End,
 }
 
 impl Pop3SessionState {
@@ -118,8 +176,9 @@ pub struct TransactionState {
     /// The currently open maildrop's directory on the filesystem.
     maildrop_dir: PathBuf,
 
-    /// The handle in the user tracker for the logged in user.
-    user_handle: UserHandle,
+    /// The handle in the user tracker for the logged in user. This is not accessed but must be present here so the
+    /// user's exclusive lock is automatically released when this handle is dropped.
+    _user_handle: UserHandle,
 
     /// The list of messages on the user's maildrop at the time of opening it, alongisde information on each message.
     ///
@@ -136,7 +195,7 @@ impl TransactionState {
     pub const fn new(maildrop_dir: PathBuf, user_handle: UserHandle, messages: Vec<Message>) -> Self {
         Self {
             maildrop_dir,
-            user_handle,
+            _user_handle: user_handle,
             messages,
         }
     }
@@ -145,10 +204,10 @@ impl TransactionState {
         &self.messages
     }
 
-    pub fn get_stats(&self) -> (usize, u64) {
-        let message_count = self.messages.len();
-        let maildrop_size = self.messages.iter().map(|m| m.size()).sum();
-        (message_count, maildrop_size)
+    pub fn get_stats(&self) -> (MessageNumberCount, u64) {
+        let non_deleted_iter = self.messages.iter().filter(|m| !m.is_deleted);
+        let stats_iter = non_deleted_iter.map(|m| (1 as MessageNumberCount, m.size()));
+        stats_iter.reduce(|(c1, t1), (c2, t2)| (c1 + c2, t1 + t2)).unwrap_or((0, 0))
     }
 
     pub fn get_message(&self, message_number: MessageNumber) -> Result<&Message, GetMessageError> {

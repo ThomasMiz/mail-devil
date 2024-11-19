@@ -1,4 +1,4 @@
-use std::{fmt, num::NonZeroU16, ops::Deref};
+use std::{fmt, num::NonZero, ops::Deref};
 
 use inlined::TinyString;
 
@@ -14,7 +14,8 @@ pub const MAILDIR_NEW_FOLDER: &str = "new";
 pub const MAILDIR_OLD_FOLDER: &str = "cur";
 
 pub type Pop3ArgString = TinyString<MAX_COMMAND_ARG_LENGTH>;
-pub type MessageNumber = NonZeroU16;
+pub type MessageNumberCount = u16;
+pub type MessageNumber = NonZero<MessageNumberCount>;
 
 #[derive(Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Pop3Username(Pop3ArgString);

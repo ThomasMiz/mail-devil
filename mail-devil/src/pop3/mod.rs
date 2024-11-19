@@ -7,7 +7,7 @@ use tokio::{
     net::TcpStream,
 };
 
-use crate::state::Pop3ServerState;
+use crate::{printlnif, state::Pop3ServerState};
 
 mod handlers;
 mod parsers;
@@ -55,7 +55,7 @@ pub async fn handle_client(mut socket: TcpStream, server_state: Pop3ServerState)
         }
     }
 
-    println!("Bro is gon 💀");
     socket.shutdown().await?;
+    printlnif!(!session.server.silent(), "Client disconnected");
     Ok(())
 }

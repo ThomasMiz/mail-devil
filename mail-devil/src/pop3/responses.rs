@@ -6,7 +6,7 @@ use std::{
 use inlined::TinyString;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
-use crate::types::MessageNumber;
+use crate::types::{MessageNumber, MessageNumberCount};
 
 /// The value allowed by the RFC is 512, but we don't need that much. This includes the `+OK` or `-ERR` and the `CRLF`.
 pub const MAX_RESPONSE_LENGTH: usize = 100;
@@ -74,25 +74,13 @@ impl<E: Display> Pop3Response<&str, E> {
     }
 }
 
-impl<E: Display> Pop3Response<TwoNumDisplay, E> {
-    pub const fn ok_stat(message_count: usize, maildrop_size: u64) -> Self {
-        Self::Ok(Some(TwoNumDisplay::new(message_count, maildrop_size)))
-    }
-}
-
-impl Pop3Response<TwoNumDisplay, &str> {
-    pub const fn ok_list_one(message_number: MessageNumber, message_size: u64) -> Self {
-        Self::Ok(Some(TwoNumDisplay::new(message_number.get() as usize, message_size)))
-    }
-}
-
 pub struct TwoNumDisplay {
-    pub first: usize,
+    pub first: MessageNumberCount,
     pub second: u64,
 }
 
 impl TwoNumDisplay {
-    pub const fn new(first: usize, second: u64) -> Self {
+    pub const fn new(first: MessageNumberCount, second: u64) -> Self {
         Self { first, second }
     }
 }
@@ -100,5 +88,45 @@ impl TwoNumDisplay {
 impl Display for TwoNumDisplay {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{} {}", self.first, self.second)
+    }
+}
+
+impl<E: Display> Pop3Response<TwoNumDisplay, E> {
+    pub const fn ok_stat(message_count: MessageNumberCount, maildrop_size: u64) -> Self {
+        Self::Ok(Some(TwoNumDisplay::new(message_count, maildrop_size)))
+    }
+}
+
+impl Pop3Response<TwoNumDisplay, &str> {
+    pub const fn ok_list_one(message_number: MessageNumber, message_size: u64) -> Self {
+        Self::Ok(Some(TwoNumDisplay::new(message_number.get(), message_size)))
+    }
+}
+
+pub struct MessagesDeletedDisplay {
+    pub count: MessageNumberCount,
+}
+
+impl MessagesDeletedDisplay {
+    pub const fn new(count: MessageNumberCount) -> Self {
+        Self { count }
+    }
+}
+
+impl Display for MessagesDeletedDisplay {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} messages deleted", self.count)
+    }
+}
+
+impl<E: Display> Pop3Response<MessagesDeletedDisplay, E> {
+    pub const fn ok_deleted(count: MessageNumberCount) -> Self {
+        Self::Ok(Some(MessagesDeletedDisplay::new(count)))
+    }
+}
+
+impl<T: Display> Pop3Response<T, MessagesDeletedDisplay> {
+    pub const fn err_deleted(count: MessageNumberCount) -> Self {
+        Self::Err(Some(MessagesDeletedDisplay::new(count)))
     }
 }

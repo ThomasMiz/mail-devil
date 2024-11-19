@@ -15,7 +15,7 @@ pub async fn run_server(startup_args: StartupArguments) -> io::Result<()> {
     let silent = startup_args.silent;
 
     for (username, password) in &startup_args.users {
-        if let Err(error) = create_user_maildir(verbose, silent, &startup_args.maildirs_file, username, password).await {
+        if let Err(error) = create_user_maildir(silent, &startup_args.maildirs_file, username, password).await {
             eprintln!("Could not create or update user {username} as requested via parameter: {error}");
         }
     }
@@ -54,7 +54,7 @@ pub async fn run_server(startup_args: StartupArguments) -> io::Result<()> {
     }
 }
 
-async fn create_user_maildir(verbose: bool, silent: bool, maildirs_file: &Path, username: &str, password: &str) -> io::Result<()> {
+async fn create_user_maildir(silent: bool, maildirs_file: &Path, username: &str, password: &str) -> io::Result<()> {
     // Create the user's maildrop directory if it doesn't exist.
     let mut path = maildirs_file.to_path_buf();
     path.push(username);

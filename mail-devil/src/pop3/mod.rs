@@ -9,6 +9,7 @@ use tokio::{
 
 use crate::{printlnif, state::Pop3ServerState};
 
+mod copy;
 mod handlers;
 mod parsers;
 mod responses;

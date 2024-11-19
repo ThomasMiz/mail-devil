@@ -1,8 +1,10 @@
 //! Structures for tracking the state of a POP3 session.
 
-use std::{
-    os::windows::fs::FileTypeExt,
-    path::{Path, PathBuf},
+use std::path::{Path, PathBuf};
+
+use tokio::{
+    fs::File,
+    io::{AsyncBufReadExt, BufReader},
 };
 
 use crate::{
@@ -41,15 +43,16 @@ impl Pop3Session {
         );
 
         let username = user_handle.username();
-        let mut messages = Vec::new();
 
         let mut directory_reader = tokio::fs::read_dir(&maildrop_path)
             .await
             .inspect_err(|error| eprintln!("Unexpected error while reading user {}'s maildrop: {error}", user_handle.username()))
             .ok()?;
 
+        let mut message_task_handles = Vec::new();
+
         // Just in case, we only load the first `MessageNumberCount::MAX` messages.
-        while messages.len() < MessageNumberCount::MAX as usize {
+        while message_task_handles.len() < MessageNumberCount::MAX as usize {
             let dir_entry = match directory_reader.next_entry().await {
                 Ok(Some(d)) => d,
                 Ok(None) => break,
@@ -60,29 +63,15 @@ impl Pop3Session {
             };
 
             let path = dir_entry.path();
-            let pathd = &path.display();
-            let file_type = match dir_entry.file_type().await {
-                Ok(t) => t,
-                Err(error) => {
-                    eprintln!("Unexpected file type error for user {username}'s maildrop on file {pathd}: {error}");
-                    continue;
-                }
-            };
+            let handle = tokio::task::spawn_local(read_message_file_and_size(path));
+            message_task_handles.push(handle);
+        }
 
-            if !file_type.is_file() && !file_type.is_symlink_file() {
-                printlnif!(self.server.verbose(), "Ignoring directory on {username}'s maildrop: {pathd}");
-                continue;
+        let mut messages = Vec::with_capacity(message_task_handles.len());
+        for handle in message_task_handles {
+            if let Ok(Ok(message)) = handle.await {
+                messages.push(message);
             }
-
-            let size = match dir_entry.metadata().await {
-                Ok(m) => m.len(),
-                Err(error) => {
-                    eprintln!("Unexpected file type error for user {username}'s maildrop on file {pathd}: {error}");
-                    continue;
-                }
-            };
-
-            messages.push(Message::new(path, size));
         }
 
         let messages_len = messages.len() as MessageNumberCount;
@@ -90,7 +79,48 @@ impl Pop3Session {
         self.state = Pop3SessionState::Transaction(TransactionState::new(maildrop_path, user_handle, messages));
         Some(messages_len)
     }
+}
 
+/// Opens a message's file in read-only mode and calculates the size of the message, converting LF line endings to CRLF
+/// as required by the POP3 protocol.
+///
+/// On success, return [`Ok`] with the given path, the opened file, and the calculated size in a new [`Message`]. On
+/// error, returns an empty [`Err`] and everything is dropped.
+async fn read_message_file_and_size(path: PathBuf) -> Result<Message, ()> {
+    let mut file = tokio::fs::File::open(&path)
+        .await
+        .inspect_err(|error| eprintln!("Could not open file for reading {}: {error}", path.display()))
+        .map_err(|_| ())?;
+
+    let mut reader = BufReader::new(&mut file);
+    let mut file_size = 0;
+    let mut was_last_char_cr = false;
+    loop {
+        let buf = match reader.fill_buf().await {
+            Ok([]) => break,
+            Ok(b) => b,
+            Err(error) => {
+                eprintln!("Error while reading from file {}: {error}", path.display());
+                return Err(());
+            }
+        };
+
+        file_size += buf.len();
+        for b in buf {
+            if *b == b'\n' && !was_last_char_cr {
+                file_size += 1;
+            }
+            was_last_char_cr = *b == b'\r';
+        }
+
+        let buf_len = buf.len();
+        reader.consume(buf_len);
+    }
+
+    Ok(Message::new(path, file, file_size as u64))
+}
+
+impl Pop3Session {
     /// Quits the current session and, if in the transaction state, deletes any messages marked for deletion by moving
     /// them to the `cur` directory.
     ///
@@ -99,52 +129,57 @@ impl Pop3Session {
     ///
     /// Will always return `Ok(0)` when not in the transaction state.
     pub async fn quit_session(&mut self) -> Result<MessageNumberCount, MessageNumberCount> {
-        let mut count = 0;
-        let mut is_ok = true;
+        let old_state = std::mem::replace(&mut self.state, Pop3SessionState::End);
 
-        if let Pop3SessionState::Transaction(transaction_state) = &mut self.state {
-            let pathbuf = &mut transaction_state.maildrop_dir;
+        match old_state {
+            Pop3SessionState::Transaction(transaction_state) => handle_close_transaction(transaction_state).await,
+            _ => Ok(0),
+        }
+    }
+}
 
-            if transaction_state.messages.iter().any(|m| m.is_deleted) {
-                pathbuf.push(MAILDIR_OLD_FOLDER);
-                if let Err(error) = tokio::fs::create_dir_all(pathbuf.as_path()).await {
-                    eprintln!("Could not ensure old messages folder exists: {error} on {}", pathbuf.display());
-                    is_ok = false;
-                } else {
-                    for deleted_message in transaction_state.messages.iter().filter(|m| m.is_deleted) {
-                        let deleted_message_file = match deleted_message.file.file_name() {
-                            Some(f) => f,
-                            None => {
-                                eprintln!("Could not get file name from path {}", deleted_message.file.display());
-                                is_ok = false;
-                                continue;
-                            }
-                        };
+async fn handle_close_transaction(transaction_state: TransactionState) -> Result<MessageNumberCount, MessageNumberCount> {
+    if !transaction_state.messages.iter().any(|m| m.delete_requested) {
+        return Ok(0);
+    }
 
-                        pathbuf.push(deleted_message_file);
-                        match tokio::fs::rename(&deleted_message.file.as_path(), pathbuf.as_path()).await {
-                            Ok(()) => count += 1,
-                            Err(error) => {
-                                is_ok = false;
-                                eprintln!(
-                                    "Error moving message file to old messages folder: {error} while moving {} to {}",
-                                    deleted_message.file.display(),
-                                    pathbuf.display()
-                                )
-                            }
-                        }
-                        pathbuf.pop();
-                    }
-                }
+    let mut pathbuf = transaction_state.maildrop_dir;
+    pathbuf.push(MAILDIR_OLD_FOLDER);
+    if let Err(error) = tokio::fs::create_dir_all(pathbuf.as_path()).await {
+        eprintln!("Could not ensure old messages folder exists: {error} on {}", pathbuf.display());
+        return Err(0);
+    }
+
+    let mut count = 0;
+    let mut is_ok = true;
+    for deleted_message in transaction_state.messages.iter().filter(|m| m.delete_requested) {
+        let deleted_message_file = match deleted_message.path.file_name() {
+            Some(f) => f,
+            None => {
+                eprintln!("Could not get file name from path {}", deleted_message.path.display());
+                is_ok = false;
+                continue;
+            }
+        };
+
+        pathbuf.push(deleted_message_file);
+        match tokio::fs::rename(&deleted_message.path.as_path(), pathbuf.as_path()).await {
+            Ok(()) => count += 1,
+            Err(error) => {
+                is_ok = false;
+                eprintln!(
+                    "Error moving message file to old messages folder: {error} while moving {} to {}",
+                    deleted_message.path.display(),
+                    pathbuf.display()
+                )
             }
         }
+        pathbuf.pop();
+    }
 
-        self.state = Pop3SessionState::End;
-
-        match is_ok {
-            true => Ok(count),
-            false => Err(count),
-        }
+    match is_ok {
+        true => Ok(count),
+        false => Err(count),
     }
 }
 
@@ -208,7 +243,7 @@ impl TransactionState {
     }
 
     pub fn get_stats(&self) -> (MessageNumberCount, u64) {
-        let non_deleted_iter = self.messages.iter().filter(|m| !m.is_deleted);
+        let non_deleted_iter = self.messages.iter().filter(|m| !m.delete_requested);
         let stats_iter = non_deleted_iter.map(|m| (1 as MessageNumberCount, m.size()));
         stats_iter.reduce(|(c1, t1), (c2, t2)| (c1 + c2, t1 + t2)).unwrap_or((0, 0))
     }
@@ -218,7 +253,17 @@ impl TransactionState {
 
         match self.messages.get(index) {
             None => Err(GetMessageError::NotExists),
-            Some(m) if m.is_deleted => Err(GetMessageError::Deleted),
+            Some(m) if m.delete_requested => Err(GetMessageError::Deleted),
+            Some(m) => Ok(m),
+        }
+    }
+
+    pub fn get_message_mut(&mut self, message_number: MessageNumber) -> Result<&mut Message, GetMessageError> {
+        let index = (message_number.get() - 1) as usize;
+
+        match self.messages.get_mut(index) {
+            None => Err(GetMessageError::NotExists),
+            Some(m) if m.delete_requested => Err(GetMessageError::Deleted),
             Some(m) => Ok(m),
         }
     }
@@ -228,9 +273,9 @@ impl TransactionState {
 
         match self.messages.get_mut(index) {
             None => Err(GetMessageError::NotExists),
-            Some(m) if m.is_deleted => Err(GetMessageError::Deleted),
+            Some(m) if m.delete_requested => Err(GetMessageError::Deleted),
             Some(m) => {
-                m.is_deleted = true;
+                m.delete_requested = true;
                 Ok(())
             }
         }
@@ -238,7 +283,7 @@ impl TransactionState {
 
     pub fn reset_messages(&mut self) {
         for message in &mut self.messages {
-            message.is_deleted = false;
+            message.delete_requested = false;
         }
     }
 }
@@ -246,21 +291,25 @@ impl TransactionState {
 /// Represents a message on a user's maildrop, alongside additional information.
 pub struct Message {
     /// The location on the filesystem where this message is found.
-    file: PathBuf,
+    path: PathBuf,
+
+    /// A file opened in read mode for this message. This locks the message, blocking access to other programs.
+    file: File,
 
     /// The size of the message measured in bytes.
     size: u64,
 
     /// Whether the user has requested this message to be deleted in the current session.
-    is_deleted: bool,
+    delete_requested: bool,
 }
 
 impl Message {
-    fn new(file: PathBuf, size: u64) -> Self {
+    fn new(path: PathBuf, file: File, size: u64) -> Self {
         Self {
+            path,
             file,
             size,
-            is_deleted: false,
+            delete_requested: false,
         }
     }
 
@@ -268,11 +317,15 @@ impl Message {
         self.size
     }
 
-    pub const fn is_deleted(&self) -> bool {
-        self.is_deleted
+    pub const fn delete_requested(&self) -> bool {
+        self.delete_requested
     }
 
-    pub fn file(&self) -> &Path {
-        &self.file
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn file(&mut self) -> &mut File {
+        &mut self.file
     }
 }

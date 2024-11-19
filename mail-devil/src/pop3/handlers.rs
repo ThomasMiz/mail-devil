@@ -1,11 +1,12 @@
 use std::{fmt::Write, io};
 
 use inlined::TinyString;
-use tokio::io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncSeekExt, AsyncWrite, AsyncWriteExt, BufReader};
 
 use crate::types::{MessageNumber, Pop3ArgString, Pop3Username};
 
 use super::{
+    copy::{self, CopyError},
     responses::Pop3Response,
     session::{GetMessageError, Pop3Session, Pop3SessionState},
 };
@@ -93,7 +94,7 @@ where
                 Pop3Response::ok_empty().write_to(writer).await?;
                 let mut buf = TinyString::<32>::new();
                 let iter = transaction_state.messages().iter().enumerate().map(|(i, m)| (i + 1, m));
-                for (msgnum, message) in iter.filter(|(_, m)| !m.is_deleted()) {
+                for (msgnum, message) in iter.filter(|(_, m)| !m.delete_requested()) {
                     let _ = write!(buf, "{msgnum} {}\r\n", message.size());
                     writer.write_all(buf.as_bytes()).await?;
                     buf.clear();
@@ -112,45 +113,31 @@ pub async fn handle_retr_command<W>(writer: &mut W, session: &mut Pop3Session, m
 where
     W: AsyncWrite + Unpin + ?Sized,
 {
-    let error = match &session.state {
-        Pop3SessionState::Transaction(transaction_state) => match transaction_state.get_message(message_number) {
-            Ok(message) => match tokio::fs::File::open(message.file()).await {
-                Ok(file) => {
-                    // TODO: Convert LF line ends to CRLF line ends.
-                    // TODO: 🤓👆aCksHuAlLy, we're not counting line ends as CRLF in the message sizes!
-                    Pop3Response::ok_empty().write_to(writer).await?;
-                    let mut file_reader = BufReader::with_capacity(session.server.buffer_size(), file);
-                    loop {
-                        let buf = file_reader.fill_buf().await?;
-                        if buf.is_empty() {
-                            break;
-                        }
-
-                        let mut was_lastchar_newline = false;
-                        let mut last_i_written = 0;
-                        for i in 0..buf.len() {
-                            if was_lastchar_newline && buf[i] == b'.' {
-                                writer.write_all(&buf[last_i_written..(i + 1)]).await?;
-                                writer.write_u8(b'.').await?;
-                                last_i_written = i + 1;
+    let error = match &mut session.state {
+        Pop3SessionState::Transaction(transaction_state) => match transaction_state.get_message_mut(message_number) {
+            Ok(message) => {
+                let file = message.file();
+                match file.rewind().await {
+                    Ok(_) => {
+                        Pop3Response::ok_empty().write_to(writer).await?;
+                        let mut reader = BufReader::with_capacity(session.server.buffer_size(), file);
+                        match copy::copy(&mut reader, writer).await {
+                            Ok(()) => {}
+                            Err(CopyError::WriterError(error)) => return Err(error),
+                            Err(CopyError::ReaderError(error)) => {
+                                eprintln!("Error while reading from file during copy: {error}");
+                                return Err(error);
                             }
-
-                            was_lastchar_newline = buf[i] == b'\n';
-                        }
-
-                        writer.write_all(&buf[last_i_written..]).await?;
-                        let bytes_read = buf.len();
-                        file_reader.consume(bytes_read);
+                        };
+                        writer.write_all(b"\r\n.\r\n").await?;
+                        return Ok(());
                     }
-
-                    writer.write_all(b".\r\n").await?;
-                    return Ok(());
+                    Err(error) => {
+                        eprintln!("Could not open message file {} {error}", message.path().display());
+                        "Error opening message file"
+                    }
                 }
-                Err(error) => {
-                    eprintln!("Could not open message file {} {error}", message.file().display());
-                    "Error opening message file"
-                }
-            },
+            }
             Err(GetMessageError::NotExists) => NO_SUCH_MESSAGE,
             Err(GetMessageError::Deleted) => MESSAGE_IS_DELETED,
         },

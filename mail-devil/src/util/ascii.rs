@@ -34,7 +34,7 @@ pub trait IsValidUsername {
 
 impl IsValidUsername for [u8] {
     fn is_valid_username(&self) -> bool {
-        if self.len() == 0 || self.len() > MAX_COMMAND_ARG_LENGTH {
+        if self.is_empty() || self.len() > MAX_COMMAND_ARG_LENGTH {
             return false;
         }
 

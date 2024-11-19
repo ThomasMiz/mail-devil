@@ -19,9 +19,9 @@ pub struct Pop3ServerState {
 }
 
 impl Pop3ServerState {
-    pub fn new(verbose: bool, silent: bool, maildirs_dir: PathBuf, transformer_file: Option<PathBuf>) -> Self {
+    pub fn new(verbose: bool, silent: bool, buffer_size: u32, maildirs_dir: PathBuf, transformer_file: Option<PathBuf>) -> Self {
         Self {
-            rc: Rc::new(InnerState::new(verbose, silent, maildirs_dir, transformer_file)),
+            rc: Rc::new(InnerState::new(verbose, silent, buffer_size, maildirs_dir, transformer_file)),
         }
     }
 
@@ -31,6 +31,10 @@ impl Pop3ServerState {
 
     pub fn silent(&self) -> bool {
         self.rc.silent
+    }
+
+    pub fn buffer_size(&self) -> usize {
+        self.rc.buffer_size as usize
     }
 
     /// Attempts to log in as the given user with the given password.
@@ -94,16 +98,18 @@ impl Pop3ServerState {
 struct InnerState {
     verbose: bool,
     silent: bool,
+    buffer_size: u32,
     maildirs_dir: PathBuf,
     transformer_file: Option<PathBuf>,
     current_users: UserTracker,
 }
 
 impl InnerState {
-    pub fn new(verbose: bool, silent: bool, maildirs_dir: PathBuf, transformer_file: Option<PathBuf>) -> Self {
+    pub fn new(verbose: bool, silent: bool, buffer_size: u32, maildirs_dir: PathBuf, transformer_file: Option<PathBuf>) -> Self {
         Self {
             verbose,
             silent,
+            buffer_size,
             maildirs_dir,
             transformer_file,
             current_users: UserTracker::new(),

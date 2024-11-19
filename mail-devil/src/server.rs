@@ -36,7 +36,13 @@ pub async fn run_server(startup_args: StartupArguments) -> io::Result<()> {
         ));
     }
 
-    let server_state = Pop3ServerState::new(startup_args.verbose, startup_args.silent, startup_args.maildirs_file, None);
+    let server_state = Pop3ServerState::new(
+        startup_args.verbose,
+        startup_args.silent,
+        startup_args.buffer_size,
+        startup_args.maildirs_file,
+        startup_args.transformer_file,
+    );
 
     loop {
         match listeners.accept_from_any().await {

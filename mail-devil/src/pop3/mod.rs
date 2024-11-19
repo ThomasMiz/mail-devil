@@ -16,8 +16,8 @@ mod session;
 
 pub async fn handle_client(mut socket: TcpStream, server_state: Pop3ServerState) -> io::Result<()> {
     let (read_half, write_half) = socket.split();
-    let mut reader = BufReader::new(read_half);
-    let mut writer = BufWriter::new(write_half);
+    let mut reader = BufReader::with_capacity(server_state.buffer_size(), read_half);
+    let mut writer = BufWriter::with_capacity(server_state.buffer_size(), write_half);
 
     let mut session = session::Pop3Session::new(server_state);
 

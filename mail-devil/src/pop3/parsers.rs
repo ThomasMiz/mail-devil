@@ -1,3 +1,9 @@
+//! Provides methods for reading and parsing POP3 commands (client requests).
+//!
+//! The intended usage of this module is to first use the asynchronous [`read_line`] to read an entire line, and then
+//! pass this line into the synchronous [`parse_command`]. The reason for not including all this behavior into a single
+//! method is to allow keeping the line buffer outside of the parser, and thus allowing it to be cancel safe.
+
 use std::{
     fmt,
     io::{self, ErrorKind},
@@ -53,7 +59,6 @@ pub enum Pop3CommandError {
     Dele(NumericArgCommandError),
     Noop(NoArgCommandError),
     Rset(NoArgCommandError),
-    IO(io::Error),
 }
 
 impl fmt::Display for Pop3CommandError {
@@ -71,14 +76,7 @@ impl fmt::Display for Pop3CommandError {
             Self::Dele(e) => e.fmt(f),
             Self::Noop(e) => e.fmt(f),
             Self::Rset(e) => e.fmt(f),
-            Self::IO(e) => write!(f, "IO error: {e:?}"),
         }
-    }
-}
-
-impl From<io::Error> for Pop3CommandError {
-    fn from(value: io::Error) -> Self {
-        Self::IO(value)
     }
 }
 
@@ -171,57 +169,6 @@ impl fmt::Display for NumericArgCommandError {
     }
 }
 
-/// Reads a POP3 command from the given buffered reader, reading up to (and including) the next end of line, and
-/// parses the command into a [`Pop3Command`] struct.
-///
-/// Returns [`Ok`] with the parsed command on success. Or otherwise, [`Err`] with error that occurred.
-pub async fn parse_command<R>(reader: &mut R) -> Result<Pop3Command, Pop3CommandError>
-where
-    R: AsyncBufRead + Unpin + ?Sized,
-{
-    // An inlined buffer into which we will copy an entire line before parsing it all at once.
-    let mut buf: TinyVec<MAX_COMMAND_LINE_LENGTH, u8> = TinyVec::new();
-
-    // Fill `buf` with a new line, checking for errors along the way.
-    read_line(reader, &mut buf).await?;
-
-    if buf.is_empty() {
-        return Err(Pop3CommandError::EmptyLine);
-    }
-
-    // Check that the whole line consists only of printable ASCII characters and if not, return an appropriate error.
-    let _ = ascii::printable_ascii_from_bytes(&buf).map_err(Pop3CommandError::NonPrintableAsciiChar)?;
-
-    // All the arguments implemented in this server are exactly 4 chars long, let's ensure that here for easy parsing.
-    if buf.len() < 4 || (buf.len() > 4 && !buf[4].is_ascii_whitespace()) {
-        return Err(Pop3CommandError::UnknownCommand);
-    }
-
-    // Calculate the command's "code", which is done by interpreting the uppercased chars as a little-endian u32.
-    buf[..4].make_ascii_uppercase();
-    let command = <[u8; 4]>::try_from(&buf[..4]).unwrap();
-    let command_code = u32::from_le_bytes(command);
-
-    // Get the remaining arguments as a single string, stripping the space after the command, or an empty string.
-    let args = match buf.len() >= 6 {
-        true => unsafe { std::str::from_utf8_unchecked(&buf[5..]) },
-        false => "",
-    };
-
-    match command_code {
-        USER_COMMAND_CODE => Ok(Pop3Command::User(parse_user_command(args)?)),
-        PASS_COMMAND_CODE => Ok(Pop3Command::Pass(parse_pass_command(args)?)),
-        QUIT_COMMAND_CODE => parse_no_arg_command(args, Pop3Command::Quit).map_err(Pop3CommandError::Quit),
-        STAT_COMMAND_CODE => parse_no_arg_command(args, Pop3Command::Stat).map_err(Pop3CommandError::Stat),
-        LIST_COMMAND_CODE => Ok(Pop3Command::List(parse_optnum_command(args).map_err(Pop3CommandError::List)?)),
-        RETR_COMMAND_CODE => Ok(Pop3Command::Retr(parse_num_command(args).map_err(Pop3CommandError::Retr)?)),
-        DELE_COMMAND_CODE => Ok(Pop3Command::Dele(parse_num_command(args).map_err(Pop3CommandError::Dele)?)),
-        NOOP_COMMAND_CODE => parse_no_arg_command(args, Pop3Command::Noop).map_err(Pop3CommandError::Noop),
-        RSET_COMMAND_CODE => parse_no_arg_command(args, Pop3Command::Rset).map_err(Pop3CommandError::Rset),
-        _ => Err(Pop3CommandError::UnknownCommand),
-    }
-}
-
 /// Reads a line from the given reader and appends it to the given `TinyVec`. Supports both CRLF and LF, and in both
 /// cases the newline sequence is not appended to the buffer.
 ///
@@ -230,7 +177,13 @@ where
 ///
 /// The only case in which this function does not read up to the end of the line is when the line is longer than `buf`
 /// can hold, in which case [`Err`] with a custom [`io::Error`] is returned with kind [`ErrorKind::InvalidData`].
-async fn read_line<const N: usize, R>(reader: &mut R, buf: &mut TinyVec<N, u8>) -> io::Result<()>
+///
+/// # Cancel safety
+/// This method might have read some data from the reader and appended it to `buf` before completing. However, if used
+/// in a loop with multiple branches, canceling this method and then calling it again with the same buffer will yield
+/// the same end result as if the method was allowed to run to the end in a single call, and thus in such a use case it
+/// is considered cancel safe.
+pub async fn read_line<const N: usize, R>(reader: &mut R, buf: &mut TinyVec<N, u8>) -> io::Result<()>
 where
     R: AsyncBufRead + Unpin + ?Sized,
 {
@@ -270,6 +223,51 @@ where
         if maybe_line_end_index.is_some() {
             return Ok(());
         }
+    }
+}
+
+/// Parses a POP3 command from the given buffer, which is intended to contain exactly one line without the line ending
+/// sequence.
+///
+/// This a synchronous method. The intended usage is to first use something like [`read_line`] to read an entire line
+/// from an asynchronous reader, and then pass the whole line to this parser.
+///
+/// Returns [`Ok`] with the parsed command on success. Or otherwise, [`Err`] with error that occurred.
+pub fn parse_command(buf: &mut [u8]) -> Result<Pop3Command, Pop3CommandError> {
+    if buf.is_empty() {
+        return Err(Pop3CommandError::EmptyLine);
+    }
+
+    // Check that the whole line consists only of printable ASCII characters and if not, return an appropriate error.
+    let _ = ascii::printable_ascii_from_bytes(buf).map_err(Pop3CommandError::NonPrintableAsciiChar)?;
+
+    // All the arguments implemented in this server are exactly 4 chars long, let's ensure that here for easy parsing.
+    if buf.len() < 4 || (buf.len() > 4 && !buf[4].is_ascii_whitespace()) {
+        return Err(Pop3CommandError::UnknownCommand);
+    }
+
+    // Calculate the command's "code", which is done by interpreting the uppercased chars as a little-endian u32.
+    buf[..4].make_ascii_uppercase();
+    let command = <[u8; 4]>::try_from(&buf[..4]).unwrap();
+    let command_code = u32::from_le_bytes(command);
+
+    // Get the remaining arguments as a single string, stripping the space after the command, or an empty string.
+    let args = match buf.len() >= 6 {
+        true => unsafe { std::str::from_utf8_unchecked(&buf[5..]) },
+        false => "",
+    };
+
+    match command_code {
+        USER_COMMAND_CODE => Ok(Pop3Command::User(parse_user_command(args)?)),
+        PASS_COMMAND_CODE => Ok(Pop3Command::Pass(parse_pass_command(args)?)),
+        QUIT_COMMAND_CODE => parse_no_arg_command(args, Pop3Command::Quit).map_err(Pop3CommandError::Quit),
+        STAT_COMMAND_CODE => parse_no_arg_command(args, Pop3Command::Stat).map_err(Pop3CommandError::Stat),
+        LIST_COMMAND_CODE => Ok(Pop3Command::List(parse_optnum_command(args).map_err(Pop3CommandError::List)?)),
+        RETR_COMMAND_CODE => Ok(Pop3Command::Retr(parse_num_command(args).map_err(Pop3CommandError::Retr)?)),
+        DELE_COMMAND_CODE => Ok(Pop3Command::Dele(parse_num_command(args).map_err(Pop3CommandError::Dele)?)),
+        NOOP_COMMAND_CODE => parse_no_arg_command(args, Pop3Command::Noop).map_err(Pop3CommandError::Noop),
+        RSET_COMMAND_CODE => parse_no_arg_command(args, Pop3Command::Rset).map_err(Pop3CommandError::Rset),
+        _ => Err(Pop3CommandError::UnknownCommand),
     }
 }
 

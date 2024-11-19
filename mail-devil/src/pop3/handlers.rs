@@ -1,7 +1,7 @@
 use std::{fmt::Write, io};
 
 use inlined::TinyString;
-use tokio::io::{AsyncBufReadExt, AsyncSeekExt, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncSeekExt, AsyncWrite, AsyncWriteExt, BufReader};
 
 use crate::types::{MessageNumber, Pop3ArgString, Pop3Username};
 

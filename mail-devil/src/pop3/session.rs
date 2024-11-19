@@ -81,7 +81,6 @@ impl Pop3Session {
             messages.push(Message::new(path, size));
         }
 
-        println!("Messages: {messages:?}");
         let messages_len = messages.len();
         maildrop_path.pop();
         self.state = Pop3SessionState::Transaction(TransactionState::new(maildrop_path, user_handle, messages));
@@ -139,7 +138,6 @@ impl TransactionState {
 }
 
 /// Represents a message on a user's maildrop, alongside additional information.
-#[derive(Debug)]
 pub struct Message {
     /// The location on the filesystem where this message is found.
     pub file: PathBuf,

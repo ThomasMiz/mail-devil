@@ -22,7 +22,7 @@ pub async fn handle_client(mut socket: TcpStream, server_state: Pop3ServerState)
     let mut session = session::Pop3Session::new(server_state);
 
     let banner = "No swearing on my christian POP3 server";
-    Pop3Response::Ok(Some(banner)).write_to(&mut writer).await?;
+    Pop3Response::ok(banner).write_to(&mut writer).await?;
 
     loop {
         writer.flush().await?;
@@ -32,7 +32,7 @@ pub async fn handle_client(mut socket: TcpStream, server_state: Pop3ServerState)
             Err(Pop3CommandError::IO(e)) if e.kind() == ErrorKind::UnexpectedEof => break,
             Err(Pop3CommandError::IO(e)) => return Err(e),
             Err(err) => {
-                Pop3Response::Err(Some(err)).write_to(&mut writer).await?;
+                Pop3Response::err(err).write_to(&mut writer).await?;
                 continue;
             }
             Ok(cmd) => cmd,

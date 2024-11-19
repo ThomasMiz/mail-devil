@@ -10,6 +10,9 @@ pub const PASSWORD_FILE_NAME: &str = "password";
 /// The maximum allowed length (in bytes) for a POP3 command argument (taken from RFC #1939).
 pub const MAX_COMMAND_ARG_LENGTH: usize = 40;
 
+pub const MAILDIR_NEW_FOLDER: &str = "new";
+pub const MAILDIR_OLD_FOLDER: &str = "cur";
+
 pub type Pop3ArgString = TinyString<MAX_COMMAND_ARG_LENGTH>;
 pub type MessageNumber = NonZeroU16;
 

@@ -33,13 +33,16 @@ impl Pop3ServerState {
         self.rc.silent
     }
 
-    pub async fn try_login_user(&self, username: &Pop3Username, password: &Pop3ArgString) -> Result<UserHandle, LoginUserError> {
+    /// Attempts to log in as the given user with the given password.
+    ///
+    /// On success, returns the user's handle on the user tracker and the path to the user's maildrop.
+    pub async fn try_login_user(&self, username: &Pop3Username, password: &Pop3ArgString) -> Result<(UserHandle, PathBuf), LoginUserError> {
         // Read the password file for the user into a `buf` buffer.
         let mut path = self.rc.maildirs_dir.to_path_buf();
         path.push(username.as_str());
         path.push(PASSWORD_FILE_NAME);
 
-        let mut file = match tokio::fs::File::open(path).await {
+        let mut file = match tokio::fs::File::open(&path).await {
             Ok(f) => f,
             Err(error) => {
                 printlnif!(
@@ -82,7 +85,8 @@ impl Pop3ServerState {
         let user_handle = user_tracker.try_register(username.clone()).ok_or(LoginUserError::AlreadyLoggedIn)?;
 
         printlnif!(!self.silent(), "User {username} logged in successfully");
-        Ok(user_handle)
+        path.pop();
+        Ok((user_handle, path))
     }
 }
 

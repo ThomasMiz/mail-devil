@@ -32,10 +32,10 @@ where
         Pop3SessionState::Authorization(authorization_state) => match &authorization_state.username {
             None => Pop3Response::Err(Some("Must specify a user before a password")),
             Some(username) => match session.server.try_login_user(username, &password).await {
-                Ok(user_handle) => {
-                    session.enter_transaction_state(user_handle);
-                    Pop3Response::Ok(None)
-                }
+                Ok((user_handle, maildrop_path)) => match session.enter_transaction_state(user_handle, maildrop_path).await {
+                    Some(_) => Pop3Response::Ok(None),
+                    None => Pop3Response::Err(Some("An unexpected error occurred while opening your maildrop")),
+                },
                 Err(reason) => Pop3Response::Err(Some(reason.get_reason_str())),
             },
         },

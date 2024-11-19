@@ -1,7 +1,7 @@
 use std::{fmt::Write, io};
 
 use inlined::TinyString;
-use tokio::io::{AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 
 use crate::types::{MessageNumber, Pop3ArgString, Pop3Username};
 
@@ -99,7 +99,7 @@ where
                     buf.clear();
                 }
 
-                return Ok(());
+                return writer.write_all(b".\r\n").await;
             }
         },
         _ => ONLY_ALLOWED_IN_TRANSACTION_STATE,
@@ -112,12 +112,52 @@ pub async fn handle_retr_command<W>(writer: &mut W, session: &mut Pop3Session, m
 where
     W: AsyncWrite + Unpin + ?Sized,
 {
-    let response = match &session.state {
-        Pop3SessionState::Transaction(transaction_state) => Pop3Response::err("Not implemented :-("),
-        _ => Pop3Response::err(ONLY_ALLOWED_IN_TRANSACTION_STATE),
+    let error = match &session.state {
+        Pop3SessionState::Transaction(transaction_state) => match transaction_state.get_message(message_number) {
+            Ok(message) => match tokio::fs::File::open(message.file()).await {
+                Ok(file) => {
+                    // TODO: Convert LF line ends to CRLF line ends.
+                    // TODO: 🤓👆aCksHuAlLy, we're not counting line ends as CRLF in the message sizes!
+                    Pop3Response::ok_empty().write_to(writer).await?;
+                    let mut file_reader = BufReader::with_capacity(session.server.buffer_size(), file);
+                    loop {
+                        let buf = file_reader.fill_buf().await?;
+                        if buf.is_empty() {
+                            break;
+                        }
+
+                        let mut was_lastchar_newline = false;
+                        let mut last_i_written = 0;
+                        for i in 0..buf.len() {
+                            if was_lastchar_newline && buf[i] == b'.' {
+                                writer.write_all(&buf[last_i_written..(i + 1)]).await?;
+                                writer.write_u8(b'.').await?;
+                                last_i_written = i + 1;
+                            }
+
+                            was_lastchar_newline = buf[i] == b'\n';
+                        }
+
+                        writer.write_all(&buf[last_i_written..]).await?;
+                        let bytes_read = buf.len();
+                        file_reader.consume(bytes_read);
+                    }
+
+                    writer.write_all(b".\r\n").await?;
+                    return Ok(());
+                }
+                Err(error) => {
+                    eprintln!("Could not open message file {} {error}", message.file().display());
+                    "Error opening message file"
+                }
+            },
+            Err(GetMessageError::NotExists) => NO_SUCH_MESSAGE,
+            Err(GetMessageError::Deleted) => MESSAGE_IS_DELETED,
+        },
+        _ => ONLY_ALLOWED_IN_TRANSACTION_STATE,
     };
 
-    response.write_to(writer).await
+    Pop3Response::err(error).write_to(writer).await
 }
 
 pub async fn handle_dele_command<W>(writer: &mut W, session: &mut Pop3Session, message_number: MessageNumber) -> io::Result<()>

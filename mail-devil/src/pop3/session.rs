@@ -1,6 +1,9 @@
 //! Structures for tracking the state of a POP3 session.
 
-use std::{os::windows::fs::FileTypeExt, path::PathBuf};
+use std::{
+    os::windows::fs::FileTypeExt,
+    path::{Path, PathBuf},
+};
 
 use crate::{
     printlnif,
@@ -267,5 +270,9 @@ impl Message {
 
     pub const fn is_deleted(&self) -> bool {
         self.is_deleted
+    }
+
+    pub fn file(&self) -> &Path {
+        &self.file
     }
 }

@@ -5,7 +5,7 @@ use std::{os::windows::fs::FileTypeExt, path::PathBuf};
 use crate::{
     printlnif,
     state::Pop3ServerState,
-    types::{Pop3Username, MAILDIR_NEW_FOLDER},
+    types::{MessageNumber, Pop3Username, MAILDIR_NEW_FOLDER},
     user_tracker::UserHandle,
 };
 
@@ -116,15 +116,20 @@ impl AuthorizationState {
 /// Represents the state of a POP3 session in the `TRANSACTION` state.
 pub struct TransactionState {
     /// The currently open maildrop's directory on the filesystem.
-    pub maildrop_dir: PathBuf,
+    maildrop_dir: PathBuf,
 
     /// The handle in the user tracker for the logged in user.
-    pub user_handle: UserHandle,
+    user_handle: UserHandle,
 
     /// The list of messages on the user's maildrop at the time of opening it, alongisde information on each message.
     ///
     /// The messages are ordered by message number, so the message `messages[i]` has the message number `(i+1)`.
-    pub messages: Vec<Message>,
+    messages: Vec<Message>,
+}
+
+pub enum GetMessageError {
+    NotExists,
+    Deleted,
 }
 
 impl TransactionState {
@@ -133,6 +138,45 @@ impl TransactionState {
             maildrop_dir,
             user_handle,
             messages,
+        }
+    }
+
+    pub const fn messages(&self) -> &Vec<Message> {
+        &self.messages
+    }
+
+    pub fn get_stats(&self) -> (usize, u64) {
+        let message_count = self.messages.len();
+        let maildrop_size = self.messages.iter().map(|m| m.size()).sum();
+        (message_count, maildrop_size)
+    }
+
+    pub fn get_message(&self, message_number: MessageNumber) -> Result<&Message, GetMessageError> {
+        let index = (message_number.get() - 1) as usize;
+
+        match self.messages.get(index) {
+            None => Err(GetMessageError::NotExists),
+            Some(m) if m.is_deleted => Err(GetMessageError::Deleted),
+            Some(m) => Ok(m),
+        }
+    }
+
+    pub fn delete_message(&mut self, message_number: MessageNumber) -> Result<(), GetMessageError> {
+        let index = (message_number.get() - 1) as usize;
+
+        match self.messages.get_mut(index) {
+            None => Err(GetMessageError::NotExists),
+            Some(m) if m.is_deleted => Err(GetMessageError::Deleted),
+            Some(m) => {
+                m.is_deleted = true;
+                Ok(())
+            }
+        }
+    }
+
+    pub fn reset_messages(&mut self) {
+        for message in &mut self.messages {
+            message.is_deleted = false;
         }
     }
 }

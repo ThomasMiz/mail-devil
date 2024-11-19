@@ -7,8 +7,13 @@ use crate::types::{MessageNumber, Pop3ArgString, Pop3Username};
 
 use super::{
     responses::Pop3Response,
-    session::{Pop3Session, Pop3SessionState},
+    session::{GetMessageError, Pop3Session, Pop3SessionState},
 };
+
+const ONLY_ALLOWED_IN_AUTHORIZATION_STATE: &str = "Command only allowed in the AUTHORIZATION state";
+const ONLY_ALLOWED_IN_TRANSACTION_STATE: &str = "Command only allowed in the TRANSACTION state";
+const NO_SUCH_MESSAGE: &str = "No such message";
+const MESSAGE_IS_DELETED: &str = "Message is deleted";
 
 pub async fn handle_user_command<W>(writer: &mut W, session: &mut Pop3Session, username: Pop3Username) -> io::Result<()>
 where
@@ -19,7 +24,7 @@ where
             authorization_state.username = Some(username);
             Pop3Response::ok_empty()
         }
-        _ => Pop3Response::err("Command only allowed in the AUTHORIZATION state"),
+        _ => Pop3Response::err(ONLY_ALLOWED_IN_AUTHORIZATION_STATE),
     };
 
     response.write_to(writer).await
@@ -40,7 +45,7 @@ where
                 Err(reason) => Pop3Response::err(reason.get_reason_str()),
             },
         },
-        _ => Pop3Response::err("Command only allowed in the AUTHORIZATION state"),
+        _ => Pop3Response::err(ONLY_ALLOWED_IN_AUTHORIZATION_STATE),
     };
 
     response.write_to(writer).await
@@ -61,11 +66,10 @@ where
 {
     let response = match &session.state {
         Pop3SessionState::Transaction(transaction_state) => {
-            let message_count = transaction_state.messages.len();
-            let maildrop_size = transaction_state.messages.iter().map(|m| m.size()).sum::<u64>();
+            let (message_count, maildrop_size) = transaction_state.get_stats();
             Pop3Response::ok_stat(message_count, maildrop_size)
         }
-        _ => Pop3Response::Err(Some("Command only allowed in the TRANSACTION state")),
+        _ => Pop3Response::Err(Some(ONLY_ALLOWED_IN_TRANSACTION_STATE)),
     };
 
     response.write_to(writer).await
@@ -77,18 +81,15 @@ where
 {
     let error_message = match &session.state {
         Pop3SessionState::Transaction(transaction_state) => match message_number {
-            Some(msgnum) if msgnum.get() as usize > transaction_state.messages.len() => "No such message",
-            Some(msgnum) => {
-                let message = &transaction_state.messages[msgnum.get() as usize - 1];
-                match message.is_deleted() {
-                    true => "Message is deleted",
-                    false => return Pop3Response::ok_list_one(msgnum, message.size()).write_to(writer).await,
-                }
-            }
+            Some(msgnum) => match transaction_state.get_message(msgnum) {
+                Err(GetMessageError::NotExists) => NO_SUCH_MESSAGE,
+                Err(GetMessageError::Deleted) => MESSAGE_IS_DELETED,
+                Ok(message) => return Pop3Response::ok_list_one(msgnum, message.size()).write_to(writer).await,
+            },
             None => {
                 Pop3Response::ok_empty().write_to(writer).await?;
                 let mut buf = TinyString::<32>::new();
-                let iter = transaction_state.messages.iter().enumerate().map(|(i, m)| (i + 1, m));
+                let iter = transaction_state.messages().iter().enumerate().map(|(i, m)| (i + 1, m));
                 for (msgnum, message) in iter.filter(|(_, m)| !m.is_deleted()) {
                     let _ = write!(buf, "{msgnum} {}\r\n", message.size());
                     writer.write_all(buf.as_bytes()).await?;
@@ -98,7 +99,7 @@ where
                 return Ok(());
             }
         },
-        _ => "Command only allowed in the TRANSACTION state",
+        _ => ONLY_ALLOWED_IN_TRANSACTION_STATE,
     };
 
     Pop3Response::err(error_message).write_to(writer).await
@@ -110,7 +111,7 @@ where
 {
     let response = match &session.state {
         Pop3SessionState::Transaction(transaction_state) => Pop3Response::err("Not implemented :-("),
-        _ => Pop3Response::err("Command only allowed in the TRANSACTION state"),
+        _ => Pop3Response::err(ONLY_ALLOWED_IN_TRANSACTION_STATE),
     };
 
     response.write_to(writer).await
@@ -121,8 +122,12 @@ where
     W: AsyncWrite + Unpin + ?Sized,
 {
     let response = match &mut session.state {
-        Pop3SessionState::Transaction(transaction_state) => Pop3Response::err("Not implemented :-("),
-        _ => Pop3Response::err("Command only allowed in the TRANSACTION state"),
+        Pop3SessionState::Transaction(transaction_state) => match transaction_state.delete_message(message_number) {
+            Ok(()) => Pop3Response::ok_empty(),
+            Err(GetMessageError::NotExists) => Pop3Response::err(NO_SUCH_MESSAGE),
+            Err(GetMessageError::Deleted) => Pop3Response::err(MESSAGE_IS_DELETED),
+        },
+        _ => Pop3Response::err(ONLY_ALLOWED_IN_TRANSACTION_STATE),
     };
 
     response.write_to(writer).await
@@ -133,8 +138,8 @@ where
     W: AsyncWrite + Unpin + ?Sized,
 {
     let response = match &session.state {
-        Pop3SessionState::Transaction(_) => Pop3Response::Ok(None),
-        _ => Pop3Response::err("Command only allowed in the TRANSACTION state"),
+        Pop3SessionState::Transaction(_) => Pop3Response::ok_empty(),
+        _ => Pop3Response::err(ONLY_ALLOWED_IN_TRANSACTION_STATE),
     };
 
     response.write_to(writer).await
@@ -145,8 +150,11 @@ where
     W: AsyncWrite + Unpin + ?Sized,
 {
     let response = match &mut session.state {
-        Pop3SessionState::Transaction(transaction_state) => Pop3Response::err("Not implemented :-("),
-        _ => Pop3Response::err("Command only allowed in the TRANSACTION state"),
+        Pop3SessionState::Transaction(transaction_state) => {
+            transaction_state.reset_messages();
+            Pop3Response::ok_empty()
+        }
+        _ => Pop3Response::err(ONLY_ALLOWED_IN_TRANSACTION_STATE),
     };
 
     response.write_to(writer).await

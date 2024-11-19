@@ -140,13 +140,13 @@ impl TransactionState {
 /// Represents a message on a user's maildrop, alongside additional information.
 pub struct Message {
     /// The location on the filesystem where this message is found.
-    pub file: PathBuf,
+    file: PathBuf,
 
     /// The size of the message measured in bytes.
-    pub size: u64,
+    size: u64,
 
     /// Whether the user has requested this message to be deleted in the current session.
-    pub is_deleted: bool,
+    is_deleted: bool,
 }
 
 impl Message {
@@ -156,5 +156,13 @@ impl Message {
             size,
             is_deleted: false,
         }
+    }
+
+    pub const fn size(&self) -> u64 {
+        self.size
+    }
+
+    pub const fn is_deleted(&self) -> bool {
+        self.is_deleted
     }
 }

@@ -6,6 +6,8 @@ use std::{
 use inlined::TinyString;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
+use crate::types::MessageNumber;
+
 /// The value allowed by the RFC is 512, but we don't need that much. This includes the `+OK` or `-ERR` and the `CRLF`.
 pub const MAX_RESPONSE_LENGTH: usize = 100;
 
@@ -58,7 +60,9 @@ impl<T: Display> Pop3Response<T, &str> {
     pub const fn ok(message: T) -> Self {
         Self::Ok(Some(message))
     }
+}
 
+impl Pop3Response<&str, &str> {
     pub const fn ok_empty() -> Self {
         Self::Ok(None)
     }
@@ -70,28 +74,31 @@ impl<E: Display> Pop3Response<&str, E> {
     }
 }
 
-impl<E: Display> Pop3Response<StatDisplay, E> {
+impl<E: Display> Pop3Response<TwoNumDisplay, E> {
     pub const fn ok_stat(message_count: usize, maildrop_size: u64) -> Self {
-        Self::Ok(Some(StatDisplay::new(message_count, maildrop_size)))
+        Self::Ok(Some(TwoNumDisplay::new(message_count, maildrop_size)))
     }
 }
 
-pub struct StatDisplay {
-    pub message_count: usize,
-    pub maildrop_size: u64,
-}
-
-impl StatDisplay {
-    pub const fn new(message_count: usize, maildrop_size: u64) -> Self {
-        Self {
-            message_count,
-            maildrop_size,
-        }
+impl Pop3Response<TwoNumDisplay, &str> {
+    pub const fn ok_list_one(message_number: MessageNumber, message_size: u64) -> Self {
+        Self::Ok(Some(TwoNumDisplay::new(message_number.get() as usize, message_size)))
     }
 }
 
-impl Display for StatDisplay {
+pub struct TwoNumDisplay {
+    pub first: usize,
+    pub second: u64,
+}
+
+impl TwoNumDisplay {
+    pub const fn new(first: usize, second: u64) -> Self {
+        Self { first, second }
+    }
+}
+
+impl Display for TwoNumDisplay {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} {}", self.message_count, self.maildrop_size)
+        write!(f, "{} {}", self.first, self.second)
     }
 }

@@ -132,7 +132,7 @@ where
                             return Err(error);
                         }
                     };
-                    writer.write_all(b"\r\n.\r\n").await?;
+                    writer.write_all(b".\r\n").await?;
                     return Ok(());
                 }
                 Err(error) => {

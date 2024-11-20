@@ -1,11 +1,12 @@
 //! Structures for tracking the state of a POP3 session.
 
-use std::path::{Path, PathBuf};
-
-use tokio::{
-    fs::File,
-    io::{AsyncBufReadExt, BufReader},
+use std::{
+    io,
+    os::windows::fs::FileTypeExt,
+    path::{Path, PathBuf},
 };
+
+use tokio::io::{AsyncBufReadExt, BufReader};
 
 use crate::{
     printlnif,
@@ -49,10 +50,10 @@ impl Pop3Session {
             .inspect_err(|error| eprintln!("Unexpected error while reading user {}'s maildrop: {error}", user_handle.username()))
             .ok()?;
 
-        let mut message_task_handles = Vec::new();
+        let mut messages = Vec::new();
 
         // Just in case, we only load the first `MessageNumberCount::MAX` messages.
-        while message_task_handles.len() < MessageNumberCount::MAX as usize {
+        while messages.len() < MessageNumberCount::MAX as usize {
             let dir_entry = match directory_reader.next_entry().await {
                 Ok(Some(d)) => d,
                 Ok(None) => break,
@@ -63,14 +64,16 @@ impl Pop3Session {
             };
 
             let path = dir_entry.path();
-            let handle = tokio::task::spawn_local(read_message_file_and_size(path));
-            message_task_handles.push(handle);
-        }
+            let file_type = match dir_entry.file_type().await {
+                Ok(t) => t,
+                Err(error) => {
+                    eprintln!("Unexpected error getting file type of {}: {error}", path.display());
+                    continue;
+                }
+            };
 
-        let mut messages = Vec::with_capacity(message_task_handles.len());
-        for handle in message_task_handles {
-            if let Ok(Ok(message)) = handle.await {
-                messages.push(message);
+            if file_type.is_file() || file_type.is_symlink_file() {
+                messages.push(Message::new(path));
             }
         }
 
@@ -79,45 +82,6 @@ impl Pop3Session {
         self.state = Pop3SessionState::Transaction(TransactionState::new(maildrop_path, user_handle, messages));
         Some(messages_len)
     }
-}
-
-/// Opens a message's file in read-only mode and calculates the size of the message, converting LF line endings to CRLF
-/// as required by the POP3 protocol.
-///
-/// On success, return [`Ok`] with the given path, the opened file, and the calculated size in a new [`Message`]. On
-/// error, returns an empty [`Err`] and everything is dropped.
-async fn read_message_file_and_size(path: PathBuf) -> Result<Message, ()> {
-    let mut file = tokio::fs::File::open(&path)
-        .await
-        .inspect_err(|error| eprintln!("Could not open file for reading {}: {error}", path.display()))
-        .map_err(|_| ())?;
-
-    let mut reader = BufReader::new(&mut file);
-    let mut file_size = 0;
-    let mut was_last_char_cr = false;
-    loop {
-        let buf = match reader.fill_buf().await {
-            Ok([]) => break,
-            Ok(b) => b,
-            Err(error) => {
-                eprintln!("Error while reading from file {}: {error}", path.display());
-                return Err(());
-            }
-        };
-
-        file_size += buf.len();
-        for b in buf {
-            if *b == b'\n' && !was_last_char_cr {
-                file_size += 1;
-            }
-            was_last_char_cr = *b == b'\r';
-        }
-
-        let buf_len = buf.len();
-        reader.consume(buf_len);
-    }
-
-    Ok(Message::new(path, file, file_size as u64))
 }
 
 impl Pop3Session {
@@ -242,9 +206,11 @@ impl TransactionState {
         &self.messages
     }
 
-    pub fn get_stats(&self) -> (MessageNumberCount, u64) {
+    pub async fn get_stats(&mut self) -> (MessageNumberCount, u64) {
+        self.ensure_all_sizes_loaded().await;
+
         let non_deleted_iter = self.messages.iter().filter(|m| !m.delete_requested);
-        let stats_iter = non_deleted_iter.map(|m| (1 as MessageNumberCount, m.size()));
+        let stats_iter = non_deleted_iter.map(|m| (1 as MessageNumberCount, m.size.unwrap_or(0)));
         stats_iter.reduce(|(c1, t1), (c2, t2)| (c1 + c2, t1 + t2)).unwrap_or((0, 0))
     }
 
@@ -286,6 +252,31 @@ impl TransactionState {
             message.delete_requested = false;
         }
     }
+
+    pub async fn ensure_all_sizes_loaded(&mut self) {
+        if self.messages.iter().all(|m| m.size.is_some()) {
+            return;
+        }
+
+        // Asynchronously calculate the size of all messages (who don't have their size cached) at the same time.
+        let mut handles = Vec::with_capacity(self.messages.len());
+        for message in &mut self.messages.iter().filter(|m| !m.delete_requested) {
+            let maybe_size = message.size;
+            let path = message.path.clone();
+            handles.push(tokio::task::spawn_local(async move {
+                match maybe_size {
+                    Some(size) => Ok(size),
+                    None => calculate_message_size(&path).await,
+                }
+            }));
+        }
+
+        for (handle, message) in handles.into_iter().zip(self.messages.iter_mut().filter(|m| !m.delete_requested)) {
+            if let Ok(Ok(size)) = handle.await {
+                message.size = Some(size);
+            }
+        }
+    }
 }
 
 /// Represents a message on a user's maildrop, alongside additional information.
@@ -293,28 +284,38 @@ pub struct Message {
     /// The location on the filesystem where this message is found.
     path: PathBuf,
 
-    /// A file opened in read mode for this message. This locks the message, blocking access to other programs.
-    file: File,
-
-    /// The size of the message measured in bytes.
-    size: u64,
+    /// The size of the message measured in bytes, or [`None`] if it hasn't been calculated yet.
+    size: Option<u64>,
 
     /// Whether the user has requested this message to be deleted in the current session.
     delete_requested: bool,
 }
 
 impl Message {
-    fn new(path: PathBuf, file: File, size: u64) -> Self {
+    fn new(path: PathBuf) -> Self {
         Self {
             path,
-            file,
-            size,
+            size: None,
             delete_requested: false,
         }
     }
 
-    pub const fn size(&self) -> u64 {
+    pub const fn size(&self) -> Option<u64> {
         self.size
+    }
+
+    /// Gets this message's size, calculating it if not already cached by traversing this message's file, converting LF
+    /// line endings to CRLF.
+    ///
+    /// The file is not modified; we simply count LF line endings as if they were CRLF.
+    pub async fn calculate_size(&mut self) -> io::Result<u64> {
+        if let Some(file_size) = self.size {
+            return Ok(file_size);
+        }
+
+        let file_size = calculate_message_size(&self.path).await?;
+        self.size = Some(file_size);
+        Ok(file_size)
     }
 
     pub const fn delete_requested(&self) -> bool {
@@ -324,8 +325,38 @@ impl Message {
     pub fn path(&self) -> &Path {
         &self.path
     }
+}
 
-    pub fn file(&mut self) -> &mut File {
-        &mut self.file
+async fn calculate_message_size(path: &Path) -> io::Result<u64> {
+    let file = tokio::fs::File::open(path)
+        .await
+        .inspect_err(|error| eprintln!("Could not open file for reading {}: {error}", path.display()))?;
+
+    let mut reader = BufReader::new(file);
+    let mut file_size = 0;
+    let mut was_last_char_cr = false;
+
+    loop {
+        let buf = match reader.fill_buf().await {
+            Ok([]) => break,
+            Ok(b) => b,
+            Err(error) => {
+                eprintln!("Error while reading from file {}: {error}", path.display());
+                return Err(error);
+            }
+        };
+
+        file_size += buf.len();
+        for b in buf {
+            if *b == b'\n' && !was_last_char_cr {
+                file_size += 1;
+            }
+            was_last_char_cr = *b == b'\r';
+        }
+
+        let buf_len = buf.len();
+        reader.consume(buf_len);
     }
+
+    Ok(file_size as u64)
 }

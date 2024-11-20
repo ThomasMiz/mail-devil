@@ -39,14 +39,12 @@ impl IsValidUsername for [u8] {
         }
 
         // Must start with a-z A-Z or '_'.
-        if (self[0] < b'a' || self[0] > b'z') && (self[0] < b'A' || self[0] > b'Z') && self[0] != b'_' {
+        if !self[0].is_ascii_alphabetic() && self[0] != b'_' {
             return false;
         }
 
         // All other characters may be a-z, A-Z, 0-9 or '_'.
-        self.iter()
-            .copied()
-            .all(|b| (b >= b'0' && b <= b'9') || (b >= b'a' && b <= b'z') || b == b'_')
+        self.iter().all(|b| b.is_ascii_alphanumeric() || *b == b'_')
     }
 }
 

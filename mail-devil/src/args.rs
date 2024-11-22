@@ -341,7 +341,7 @@ where
     let mut silent = false;
     let mut maildirs_file = None;
     let mut users = HashMap::new();
-    let mut buffer_size = DEFAULT_BUFFER_SIZE;
+    let mut buffer_size = 0;
     let mut transformer_file = None;
 
     // Ignore the first argument, as it's by convention the name of the program
@@ -379,6 +379,10 @@ where
     }
 
     let maildirs_file = maildirs_file.unwrap_or_else(|| DEFAULT_MAILDIRS_FILE.into());
+
+    if buffer_size == 0 {
+        buffer_size = DEFAULT_BUFFER_SIZE;
+    }
 
     let result = StartupArguments {
         pop3_bind_sockets,

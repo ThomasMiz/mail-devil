@@ -190,6 +190,10 @@ where
     loop {
         // Wait for the reader to have bytes available and grab up to `buf_remaining_capacity` of them.
         let reader_buf = reader.fill_buf().await?;
+        if reader_buf.is_empty() {
+            return Err(io::Error::from(ErrorKind::UnexpectedEof));
+        }
+
         let buf_remaining_capacity = buf.capacity() - buf.len();
         let reader_buf = &reader_buf[..reader_buf.len().min(buf_remaining_capacity as usize + 1)];
 

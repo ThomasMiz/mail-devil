@@ -29,13 +29,21 @@ pub async fn handle_client(mut socket: TcpStream, server_state: Pop3ServerState)
 
     // An inlined buffer into which we will copy an entire line before parsing it all at once.
     let mut parse_buf: TinyVec<MAX_COMMAND_LINE_LENGTH, u8> = TinyVec::new();
+    let mut reader_closed = false;
 
     loop {
+        if reader_closed && writer.buffer().is_empty() {
+            break;
+        }
+
         select! {
             biased;
-            result = parsers::read_line(&mut reader, &mut parse_buf) => {
+            result = parsers::read_line(&mut reader, &mut parse_buf), if !reader_closed => {
                 match result {
-                    Err(error) if error.kind() == ErrorKind::UnexpectedEof => break,
+                    Err(error) if error.kind() == ErrorKind::UnexpectedEof => {
+                        reader_closed = true;
+                        continue;
+                    },
                     Err(error) => return Err(error),
                     _ => {}
                 }
@@ -62,7 +70,6 @@ pub async fn handle_client(mut socket: TcpStream, server_state: Pop3ServerState)
                     Pop3Command::Rset => handlers::handle_rset_command(&mut writer, &mut session).await?,
                     Pop3Command::Quit => {
                         handlers::handle_quit_command(&mut writer, &mut session).await?;
-                        writer.flush().await?;
                         break;
                     }
                 }

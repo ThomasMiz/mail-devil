@@ -4,7 +4,7 @@ use std::path::Path;
 
 use crate::args::StartupArguments;
 use crate::state::Pop3ServerState;
-use crate::types::PASSWORD_FILE_NAME;
+use crate::types::{MAILDIR_NEW_FOLDER, PASSWORD_FILE_NAME};
 use crate::util::sockets::{AcceptFromAny, PrintSockaddrOrUnknown};
 use crate::{pop3, printlnif};
 use tokio::io::AsyncWriteExt;
@@ -64,7 +64,9 @@ async fn create_user_maildir(silent: bool, maildirs_file: &Path, username: &str,
     // Create the user's maildrop directory if it doesn't exist.
     let mut path = maildirs_file.to_path_buf();
     path.push(username);
+    path.push(MAILDIR_NEW_FOLDER);
     tokio::fs::create_dir_all(&path).await?;
+    path.pop();
 
     // Create a password file in the user's maildrop and write the password to that file.
     path.push(PASSWORD_FILE_NAME);

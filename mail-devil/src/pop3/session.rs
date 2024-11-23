@@ -2,7 +2,6 @@
 
 use std::{
     io,
-    os::windows::fs::FileTypeExt,
     path::{Path, PathBuf},
 };
 
@@ -72,7 +71,7 @@ impl Pop3Session {
                 }
             };
 
-            if file_type.is_file() || file_type.is_symlink_file() {
+            if file_type.is_file() {
                 messages.push(Message::new(path));
             }
         }

@@ -1,7 +1,7 @@
 use std::{fmt::Write, io};
 
 use inlined::TinyString;
-use tokio::io::{AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncWrite, AsyncWriteExt};
 
 use crate::types::{MessageNumber, Pop3ArgString, Pop3Username};
 
@@ -121,10 +121,9 @@ where
     let error = match &session.state {
         Pop3SessionState::Transaction(transaction_state) => match transaction_state.get_message(message_number) {
             Ok(message) => match tokio::fs::File::open(message.path()).await {
-                Ok(file) => {
+                Ok(mut file) => {
                     Pop3Response::ok_empty().write_to(writer).await?;
-                    let mut reader = BufReader::with_capacity(session.server.buffer_size(), file);
-                    match copy::copy(&mut reader, writer).await {
+                    match copy::copy(session.server.buffer_size(), &mut file, writer).await {
                         Ok(()) => {}
                         Err(CopyError::WriterError(error)) => return Err(error),
                         Err(CopyError::ReaderError(error)) => {
